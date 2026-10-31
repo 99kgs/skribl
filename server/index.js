@@ -17,8 +17,8 @@ const app = express();
 app.set("trust proxy", 1);
 app.use(cors({ origin: "*" }));
 
-app.get("/", (_req, res) => res.type("text").send("skribbl websocket ok"));
-app.get("/health", (_req, res) => res.json({ ok: true, service: "skribbl-verity-server" }));
+app.get("/", (_req, res) => res.type("text").send("skribl websocket ok"));
+app.get("/health", (_req, res) => res.json({ ok: true, service: "skribl-verity-server" }));
 app.get("/favicon.ico", (_req, res) => res.status(204).end());
 
 const server = http.createServer(app);
@@ -150,5 +150,5 @@ io.on("connection", (socket) => {
 
 const port = Number(process.env.PORT) || 3000;
 server.listen(port, "0.0.0.0", () => {
-  console.log("skribbl server listening on", port);
+  console.log("skribl server listening on", port);
 });

@@ -1,5 +1,5 @@
 {
-  "name": "skribbl-verity-server",
+  "name": "skribl-verity-server",
   "version": "1.0.0",
   "private": true,
   "main": "index.js",
