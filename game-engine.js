@@ -38,6 +38,8 @@ const myState = {
 let mqttClient = null;
 let gameSocket = null;
 let useSocketRelay = false;
+let mqttConnected = false;
+let presenceAnnounced = false;
 let currentRoomCode = "";
 let roomTopic = "";
 
@@ -313,13 +315,73 @@ function enterGameSession() {
   initGameSocket();
 }
 
+function announcePresence() {
+  if (presenceAnnounced) return;
+  if (!gameState.players[myPlayerId]) return;
+  if (!useSocketRelay && !mqttConnected) return;
+  presenceAnnounced = true;
+  broadcastPacket({
+    type: "PLAYER_JOIN",
+    player: gameState.players[myPlayerId]
+  });
+  broadcastPacket({ type: "REQUEST_SYNC" });
+}
+
+function startMqttConnection(brokerIndex = 0) {
+  if (brokerIndex >= MQTT_BROKERS.length) brokerIndex = 0;
+  const brokerUrl = MQTT_BROKERS[brokerIndex];
+
+  if (!window.mqtt) return;
+
+  try {
+    const clientId = "client_" + myPlayerId + "_" + Math.random().toString(16).substring(2, 8);
+    mqttClient = mqtt.connect(brokerUrl, {
+      clientId: clientId,
+      clean: true,
+      connectTimeout: 8000,
+      reconnectPeriod: 3000
+    });
+
+    mqttClient.on("connect", () => {
+      mqttConnected = true;
+      console.log("MQTT connected:", brokerUrl);
+      addChatMessage("Сеть", "MQTT подключён — игроки в комнате синхронизируются.", "system");
+
+      mqttClient.subscribe(roomTopic, { qos: 0 }, (err) => {
+        if (!err) announcePresence();
+      });
+    });
+
+    mqttClient.on("close", () => {
+      mqttConnected = false;
+      presenceAnnounced = false;
+    });
+
+    mqttClient.on("message", (topic, message) => {
+      if (topic === roomTopic) {
+        try {
+          handleIncomingPacket(JSON.parse(message.toString()));
+        } catch (e) {}
+      }
+    });
+
+    mqttClient.on("error", () => {
+      console.warn("MQTT error, try next broker");
+    });
+  } catch (err) {
+    console.error("MQTT Init Error:", err);
+  }
+}
+
 function initGameSocket() {
   const serverUrl = getGameServerUrl();
   if (!serverUrl || typeof io === "undefined") return;
 
   gameSocket = io(serverUrl, {
-    transports: ["websocket", "polling"],
-    reconnection: true
+    transports: ["polling", "websocket"],
+    reconnection: true,
+    reconnectionAttempts: 12,
+    timeout: 20000
   });
 
   gameSocket.on("connect", () => {
@@ -330,15 +392,25 @@ function initGameSocket() {
       "join",
       { room: currentRoomCode, playerId: myPlayerId, player: me },
       () => {
-        broadcastPacket({ type: "REQUEST_SYNC" });
+        addChatMessage("Сеть", "WebSocket-сервер подключён — рисование синхронное.", "system");
+        announcePresence();
       }
     );
-    addChatMessage("Сеть", "WebSocket-сервер подключён — рисование синхронное.", "system");
-    addChatMessage("Сеть", `Комната «${currentRoomCode}». Друзья должны открыть ту же ссылку сверху!`, "system");
+    addChatMessage("Сеть", `Комната «${currentRoomCode}». Друзья — та же ссылка сверху!`, "system");
+  });
+
+  gameSocket.on("connect_error", () => {
+    useSocketRelay = false;
+    addChatMessage(
+      "Сеть",
+      `WebSocket (${getGameServerUrl()}) не ответил. Игра через MQTT. Открой этот URL в браузере, подожди 30 сек и обнови игру.`,
+      "system"
+    );
   });
 
   gameSocket.on("disconnect", () => {
     useSocketRelay = false;
+    addChatMessage("Сеть", "WebSocket отключён — рисование через снимки (MQTT).", "system");
   });
 
   gameSocket.on("relay", (packet) => {
@@ -358,78 +430,28 @@ function initGameSocket() {
   });
 }
 
-function initNetworkConnection(brokerIndex = 0) {
-  if (brokerIndex >= MQTT_BROKERS.length) {
-    brokerIndex = 0; // циклический перебор
-  }
-
-  const brokerUrl = MQTT_BROKERS[brokerIndex];
-
+function initNetworkConnection() {
   if (getGameServerUrl()) {
-    addChatMessage("Сеть", "Подключение к игровому WebSocket…", "system");
+    addChatMessage("Сеть", "Подключение WebSocket + MQTT…", "system");
   } else {
-    addChatMessage("Сеть", `Подключение к облаку (MQTT, режим снимков)…`, "system");
+    addChatMessage("Сеть", "Подключение MQTT…", "system");
   }
 
-  if (!getGameServerUrl()) {
-    try {
-      if (window.mqtt) {
-        const clientId = "client_" + myPlayerId + "_" + Math.random().toString(16).substring(2, 8);
-        mqttClient = mqtt.connect(brokerUrl, {
-          clientId: clientId,
-          clean: true,
-          connectTimeout: 5000,
-          reconnectPeriod: 3000
-        });
-
-        mqttClient.on("connect", () => {
-          console.log("MQTT connected:", brokerUrl);
-          addChatMessage("Сеть", "Вы в сети (MQTT). Для лучшего рисования подключите WebSocket-сервер.", "system");
-
-          mqttClient.subscribe(roomTopic, { qos: 0 }, (err) => {
-            if (!err) {
-              broadcastPacket({
-                type: "PLAYER_JOIN",
-                player: gameState.players[myPlayerId]
-              });
-            }
-          });
-        });
-
-        mqttClient.on("message", (topic, message) => {
-          if (topic === roomTopic) {
-            try {
-              const data = JSON.parse(message.toString());
-              handleIncomingPacket(data);
-            } catch (e) {}
-          }
-        });
-
-        mqttClient.on("error", (err) => {
-          console.warn("MQTT Broker error, fallback to next broker:", err);
-        });
-      }
-    } catch (err) {
-      console.error("MQTT Init Error:", err);
-    }
-  }
+  startMqttConnection();
 
   try {
     const localBus = new BroadcastChannel("skribbl_bc_" + currentRoomCode);
     localBus.onmessage = (e) => handleIncomingPacket(e.data);
   } catch (e) {}
 
-  if (!getGameServerUrl()) {
-    window.addEventListener("storage", (e) => {
-      if (e.key === "skribbl_ls_" + currentRoomCode && e.newValue) {
-        try {
-          handleIncomingPacket(JSON.parse(e.newValue));
-        } catch (err) {}
-      }
-    });
-  }
+  window.addEventListener("storage", (e) => {
+    if (e.key === "skribbl_ls_" + currentRoomCode && e.newValue) {
+      try {
+        handleIncomingPacket(JSON.parse(e.newValue));
+      } catch (err) {}
+    }
+  });
 
-  // Heartbeat каждые 2 секунды
   setInterval(() => {
     if (gameState.players[myPlayerId]) {
       gameState.players[myPlayerId].lastSeen = Date.now();
@@ -451,13 +473,13 @@ function broadcastPacket(packet) {
 
   if (useSocketRelay && gameSocket && gameSocket.connected) {
     gameSocket.emit("relay", packet);
-  } else {
-    const qos = (packet.type === "DRAW_BATCH" || packet.type === "DRAW_STROKE" || packet.type === "CLEAR" || packet.type === "SNAP_PART") ? 1 : 0;
-    if (mqttClient && mqttClient.connected) {
-      try {
-        mqttClient.publish(roomTopic, JSON.stringify(packet), { qos });
-      } catch (e) {}
-    }
+  }
+
+  const qos = (packet.type === "DRAW_BATCH" || packet.type === "DRAW_STROKE" || packet.type === "CLEAR" || packet.type === "SNAP_PART") ? 1 : 0;
+  if (mqttClient && mqttClient.connected) {
+    try {
+      mqttClient.publish(roomTopic, JSON.stringify(packet), { qos });
+    } catch (e) {}
   }
 
   try {
@@ -465,7 +487,7 @@ function broadcastPacket(packet) {
     localBus.postMessage(packet);
   } catch (e) {}
 
-  if (!useSocketRelay && packet.type !== "DRAW_BATCH" && packet.type !== "DRAW_STROKE" && packet.type !== "SNAP_PART") {
+  if (packet.type !== "DRAW_BATCH" && packet.type !== "DRAW_STROKE" && packet.type !== "SNAP_PART") {
     try {
       localStorage.setItem("skribbl_ls_" + currentRoomCode, JSON.stringify(packet));
     } catch (e) {}
@@ -695,6 +717,7 @@ function isRoomLeader() {
 
 function checkGameProgress() {
   if (!isRoomLeader()) return;
+  if (!mqttConnected && !useSocketRelay) return;
 
   const players = getPlayersList();
   if (players.length < MIN_PLAYERS_TO_START) {
