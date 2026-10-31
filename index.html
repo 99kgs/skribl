@@ -1,133 +1,251 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Skribbl Friends - Рисуй и Угадывай</title>
-  <link rel="stylesheet" href="style.css">
+  <title>skribbl.io - Free Multiplayer Drawing & Guessing Game</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="stylesheet" type="text/css" href="css/style.css">
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    /* Стили для P2P-виджетов и адаптации оригинального UI */
+    .hidden { display: none !important; }
+    #screen-game { display: none; }
+    body[data-in-game="true"] #screen-game { display: block !important; }
+    body[data-in-game="true"] #home { display: none !important; }
+
+    /* Дополнительные стили элементов лобби skribbl */
+    .custom-lobby-box {
+      margin-top: 15px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .custom-join-row {
+      display: flex;
+      gap: 8px;
+    }
+    .custom-join-row input {
+      flex: 1;
+      padding: 10px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+    .btn-action {
+      background: #4caf50;
+      color: white;
+      border: none;
+      padding: 12px;
+      font-size: 16px;
+      font-weight: bold;
+      border-radius: 4px;
+      cursor: pointer;
+      box-shadow: 0 4px #2e7d32;
+    }
+    .btn-action:hover {
+      background: #43a047;
+    }
+    .btn-action:active {
+      transform: translateY(2px);
+      box-shadow: 0 2px #2e7d32;
+    }
+    .btn-secondary {
+      background: #2196f3;
+      box-shadow: 0 4px #1565c0;
+    }
+    .btn-secondary:hover {
+      background: #1e88e5;
+    }
+    .btn-secondary:active {
+      box-shadow: 0 2px #1565c0;
+    }
+
+    /* Модальное окно выбора слова 1 в 1 как в skribbl */
+    #overlay-word-picker {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(255, 255, 255, 0.95);
+      border: 4px solid #53759e;
+      border-radius: 12px;
+      padding: 24px;
+      z-index: 1000;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      text-align: center;
+    }
+    #overlay-word-picker h3 {
+      font-size: 22px;
+      margin-bottom: 15px;
+      color: #333;
+    }
+    .word-choices-list {
+      display: flex;
+      gap: 12px;
+    }
+    .word-btn {
+      background: #53759e;
+      color: white;
+      border: none;
+      padding: 14px 22px;
+      font-size: 18px;
+      font-weight: bold;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .word-btn:hover {
+      background: #395273;
+    }
+
+    /* Холст внутри игрового экрана skribbl */
+    #game-canvas-custom {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+      background: #ffffff;
+      border-radius: 4px;
+    }
+    #game-board {
+      position: relative;
+    }
+
+    /* Инвайт-кнопка в комнате */
+    .room-invite-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #eef2f7;
+      padding: 4px 10px;
+      border-radius: 14px;
+      font-size: 13px;
+      cursor: pointer;
+      border: 1px solid #cbd5e1;
+    }
+    .room-invite-pill:hover {
+      background: #dfe6f0;
+    }
+  </style>
 </head>
-<body>
+<body translate="no">
 
-  <!-- Экран входа в лобби -->
-  <div id="login-screen" class="overlay-modal">
-    <div class="card login-card">
-      <div class="logo">
-        <span class="logo-sketch">✏️</span>
-        <h1>Skribbl Friends</h1>
-      </div>
-      <p class="subtitle">Играй и рисуй с друзьями прямо в браузере</p>
-      
-      <div class="form-group">
-        <label for="username-input">Твой никнейм:</label>
-        <input type="text" id="username-input" placeholder="Введите имя..." maxlength="15" autocomplete="off">
-      </div>
+  <!-- ОРИГИНАЛЬНОЕ ГЛАВНОЕ МЕНЮ SKRIBBL.IO -->
+  <div id="home">
+    <div class="logo-big">
+      <a href="javascript:void(0)"><img src="img/logo.gif" alt="skribbl.io"></a>
+      <div class="avatar-container"></div>
+    </div>
 
-      <div class="avatar-selection">
-        <label>Выбери аватарку:</label>
-        <div class="avatars" id="avatars-container"></div>
-      </div>
+    <div class="panels">
+      <div class="panel-left"></div>
 
-      <div class="actions">
-        <button id="btn-create-room" class="btn btn-primary">➕ Создать комнату</button>
-        <div class="divider"><span>или</span></div>
-        <div class="join-box">
-          <input type="text" id="room-code-input" placeholder="Код комнаты..." autocomplete="off">
-          <button id="btn-join-room" class="btn btn-secondary">Войти по коду</button>
+      <div class="panel">
+        <div class="container-name-lang">
+          <input class="input-name" id="player-name-input" type="text" placeholder="Введите ваш ник..." maxlength="18" autocomplete="off">
+        </div>
+
+        <div class="custom-lobby-box">
+          <button id="btn-create-lobby" class="btn-action">🎮 Создать приватную комнату</button>
+          
+          <div class="custom-join-row">
+            <input type="text" id="input-room-code" placeholder="КОД КОМНАТЫ..." maxlength="6" autocomplete="off">
+            <button id="btn-join-lobby" class="btn-action btn-secondary">Войти</button>
+          </div>
         </div>
       </div>
+
+      <div class="panel-right"></div>
     </div>
   </div>
 
-  <!-- Модальное окно выбора слова (для рисующего) -->
-  <div id="word-picker-modal" class="overlay-modal hidden">
-    <div class="card word-picker-card">
-      <h2>Твоя очередь рисовать!</h2>
-      <p>Выбери одно слово:</p>
-      <div class="words-container" id="word-choices"></div>
+  <!-- ОРИГИНАЛЬНЫЙ ИГРОВОЙ ЭКРАН SKRIBBL.IO -->
+  <div id="screen-game">
+    <div id="game-wrapper">
+      <div id="game-container">
+        
+        <!-- Верхняя плашка (Таймер, Слово, Раунд) -->
+        <div id="game-room">
+          <div class="timer">
+            <div class="timer-icon"></div>
+            <div class="timer-text" id="game-timer">60</div>
+          </div>
+
+          <div class="hints">
+            <div class="hint" id="game-word-hint">ОЖИДАНИЕ...</div>
+          </div>
+
+          <div class="round">
+            <div class="text" id="game-round-info">Раунд 1/3</div>
+            <button id="btn-host-start" class="btn-action" style="padding: 4px 12px; font-size: 12px; margin-left: 10px; display: none;">▶ Старт</button>
+            <div class="room-invite-pill" id="btn-copy-code" style="margin-left: 8px;">
+              🔗 <span id="display-room-code">КОД</span> (Копировать)
+            </div>
+          </div>
+        </div>
+
+        <!-- Центральная область (Игроки слева, Доска по центру, Чат справа) -->
+        <div id="game-players">
+          <div class="players-list" id="skribbl-players-list">
+            <!-- Карточки игроков будут добавляться скриптом -->
+          </div>
+        </div>
+
+        <div id="game-board">
+          <canvas id="game-canvas-custom" width="800" height="600"></canvas>
+          
+          <!-- Окно выбора слова -->
+          <div id="overlay-word-picker" class="hidden">
+            <h3>Выбери слово для рисования:</h3>
+            <div class="word-choices-list" id="picker-choices-container"></div>
+          </div>
+        </div>
+
+        <!-- Панель рисования 1-в-1 со skribbl -->
+        <div id="game-toolbar">
+          <div class="toolbar-group-tools" style="display: flex; gap: 8px; align-items: center; margin-right: 12px;">
+            <button id="tool-brush" class="btn-action" style="padding: 6px 12px; font-size: 13px;">✏️ Кисть</button>
+            <button id="tool-eraser" class="btn-action btn-secondary" style="padding: 6px 12px; font-size: 13px;">🧹 Ластик</button>
+            <button id="tool-clear" class="btn-action" style="background:#e53935; box-shadow:0 4px #b71c1c; padding: 6px 12px; font-size: 13px;">🗑 Очистить</button>
+          </div>
+
+          <div class="sizes" style="display: flex; gap: 6px; align-items: center;">
+            <button class="btn-size active" data-size="3" style="cursor:pointer; padding: 6px 10px; font-weight:bold;">3px</button>
+            <button class="btn-size" data-size="6" style="cursor:pointer; padding: 6px 10px; font-weight:bold;">6px</button>
+            <button class="btn-size" data-size="12" style="cursor:pointer; padding: 6px 10px; font-weight:bold;">12px</button>
+            <button class="btn-size" data-size="24" style="cursor:pointer; padding: 6px 10px; font-weight:bold;">24px</button>
+          </div>
+
+          <!-- Цвета -->
+          <div class="colors-palette" style="display: flex; gap: 4px; margin-left: 12px;">
+            <div class="color-box" data-color="#000000" style="width:24px;height:24px;background:#000000;cursor:pointer;border-radius:3px;"></div>
+            <div class="color-box" data-color="#ffffff" style="width:24px;height:24px;background:#ffffff;border:1px solid #ccc;cursor:pointer;border-radius:3px;"></div>
+            <div class="color-box" data-color="#e53935" style="width:24px;height:24px;background:#e53935;cursor:pointer;border-radius:3px;"></div>
+            <div class="color-box" data-color="#fb8c00" style="width:24px;height:24px;background:#fb8c00;cursor:pointer;border-radius:3px;"></div>
+            <div class="color-box" data-color="#fdd835" style="width:24px;height:24px;background:#fdd835;cursor:pointer;border-radius:3px;"></div>
+            <div class="color-box" data-color="#43a047" style="width:24px;height:24px;background:#43a047;cursor:pointer;border-radius:3px;"></div>
+            <div class="color-box" data-color="#1e88e5" style="width:24px;height:24px;background:#1e88e5;cursor:pointer;border-radius:3px;"></div>
+            <div class="color-box" data-color="#8e24aa" style="width:24px;height:24px;background:#8e24aa;cursor:pointer;border-radius:3px;"></div>
+            <div class="color-box" data-color="#6d4c41" style="width:24px;height:24px;background:#6d4c41;cursor:pointer;border-radius:3px;"></div>
+          </div>
+        </div>
+
+        <!-- Чат skribbl справа -->
+        <div id="game-chat">
+          <div class="chat-content" id="skribbl-chat-box" style="overflow-y:auto; flex:1; padding: 8px; display:flex; flex-direction:column; gap:4px; font-size:14px;">
+            <div style="color: #666; font-style:italic;">Добро пожаловать в Skribbl! Передайте код друзьям.</div>
+          </div>
+          <form class="chat-form" id="skribbl-chat-form">
+            <input type="text" id="skribbl-chat-input" autocomplete="off" placeholder="Введите ваш вариант..." maxlength="100">
+          </form>
+        </div>
+
+      </div>
     </div>
-  </div>
-
-  <!-- Основной экран игры -->
-  <div id="game-screen" class="hidden">
-    <header class="game-header">
-      <div class="header-left">
-        <span class="game-logo">✏️ Skribbl</span>
-        <div class="room-pill">
-          Комната: <strong id="current-room-code">...</strong>
-          <button id="btn-copy-invite" title="Скопировать ссылку для друзей">📋 Пригласить</button>
-        </div>
-      </div>
-
-      <div class="header-center">
-        <div class="timer-badge" id="timer-badge">
-          ⏳ <span id="timer-display">60</span>s
-        </div>
-        <div class="word-mask-badge" id="word-mask-badge">
-          <span id="word-mask-display">Ожидание...</span>
-        </div>
-      </div>
-
-      <div class="header-right">
-        <button id="btn-start-game" class="btn btn-sm btn-primary hidden">▶ Начать игру</button>
-        <span id="round-badge" class="round-badge">Раунд 1/3</span>
-      </div>
-    </header>
-
-    <main class="game-layout">
-      <!-- Список игроков слева -->
-      <aside class="players-sidebar">
-        <h3>Игроки (<span id="players-count">0</span>)</h3>
-        <div id="players-list" class="players-list"></div>
-      </aside>
-
-      <!-- Холст и инструменты по центру -->
-      <section class="canvas-section">
-        <div class="canvas-container">
-          <canvas id="drawing-canvas" width="800" height="600"></canvas>
-          <div id="canvas-overlay-text" class="canvas-overlay-text hidden"></div>
-        </div>
-
-        <!-- Панель инструментов (только для рисующего) -->
-        <div class="toolbar" id="toolbar">
-          <div class="palette" id="palette">
-            <button class="color-btn active" style="background: #000000;" data-color="#000000"></button>
-            <button class="color-btn" style="background: #ffffff; border: 1px solid #ccc;" data-color="#ffffff"></button>
-            <button class="color-btn" style="background: #e74c3c;" data-color="#e74c3c"></button>
-            <button class="color-btn" style="background: #e67e22;" data-color="#e67e22"></button>
-            <button class="color-btn" style="background: #f1c40f;" data-color="#f1c40f"></button>
-            <button class="color-btn" style="background: #2ecc71;" data-color="#2ecc71"></button>
-            <button class="color-btn" style="background: #1abc9c;" data-color="#1abc9c"></button>
-            <button class="color-btn" style="background: #3498db;" data-color="#3498db"></button>
-            <button class="color-btn" style="background: #9b59b6;" data-color="#9b59b6"></button>
-            <button class="color-btn" style="background: #795548;" data-color="#795548"></button>
-          </div>
-
-          <div class="brush-sizes" id="brush-sizes">
-            <button class="size-btn active" data-size="3"><span style="width: 6px; height: 6px;"></span></button>
-            <button class="size-btn" data-size="6"><span style="width: 10px; height: 10px;"></span></button>
-            <button class="size-btn" data-size="12"><span style="width: 16px; height: 16px;"></span></button>
-            <button class="size-btn" data-size="24"><span style="width: 22px; height: 22px;"></span></button>
-          </div>
-
-          <div class="tool-actions">
-            <button id="btn-eraser" class="tool-btn" title="Ластик">🧹 Ластик</button>
-            <button id="btn-clear-canvas" class="tool-btn danger" title="Очистить холст">🗑 Очистить</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- Чат и угадывание справа -->
-      <aside class="chat-sidebar">
-        <div class="chat-messages" id="chat-messages">
-          <div class="chat-msg system">Добро пожаловать в Skribbl Friends! Отправьте ссылку друзьям.</div>
-        </div>
-        <form id="chat-form" class="chat-form">
-          <input type="text" id="chat-input" placeholder="Напишите ответ или сообщение..." autocomplete="off">
-          <button type="submit" class="btn btn-sm btn-primary">Отправить</button>
-        </form>
-      </aside>
-    </main>
   </div>
 
   <script src="words.js"></script>
