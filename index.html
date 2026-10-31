@@ -3,17 +3,14 @@
 <head>
   <meta charset="utf-8">
   <title>skribbl - Рисуй и Угадывай</title>
-  <link rel="icon" type="image/x-icon" href="favicon.ico?v=4">
-  <link rel="shortcut icon" href="favicon.ico?v=4">
-  <link rel="apple-touch-icon" href="favicon.png?v=4">
-  <link rel="icon" type="image/png" sizes="64x64" href="favicon.png?v=4">
+  <link rel="icon" type="image/x-icon" href="favicon.ico?v=5">
+  <link rel="shortcut icon" href="favicon.ico?v=5">
+  <link rel="apple-touch-icon" href="favicon.png?v=5">
+  <link rel="icon" type="image/png" sizes="64x64" href="favicon.png?v=5">
   <link href="main.css" rel="stylesheet">
-  
-  <!-- PeerJS для прямого соединения Host-Client по ссылке -->
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 
   <style>
-    /* Убираем лишнюю рекламу */
+    /* Убираем рекламу */
     #head-advertice, #header-advertice, #chat-advertice, #preroll, .game-sidebar-actions, .containerPlayerListButtons { display: none !important; }
     
     /* Список игроков слева */
@@ -31,7 +28,7 @@
       gap: 4px !important;
     }
 
-    /* Верхняя плашка ссылки приглашения в игре */
+    /* Верхняя плашка ссылки приглашения */
     .room-link-header-bar {
       display: flex;
       align-items: center;
@@ -61,7 +58,7 @@
     }
     .btn-copy-sm:hover { background: #4cae4c; }
 
-    /* Модалка выбора слова */
+    /* Окно выбора слова */
     #word-select-modal {
       position: absolute;
       inset: 0;
@@ -199,7 +196,7 @@
               </div>
             </div>
 
-            <!-- КНОПКА СОЗДАТЬ / ВОЙТИ -->
+            <!-- КНОПКА ВОЙТИ / ИГРАТЬ -->
             <button class="btn btn-success btn-lg btn-block" id="btnPlayGame" style="margin-top:12px; font-weight:bold; font-size:20px;" type="button">
               Создать комнату
             </button>
@@ -219,7 +216,7 @@
         <div id="round">Раунд 1 из 3</div>
         <div id="currentWord" style="flex:1; text-align:center;">ОЖИДАНИЕ...</div>
 
-        <!-- Кнопка и поле ссылки для друзей -->
+        <!-- Поле ссылки для друзей -->
         <div class="room-link-header-bar" id="roomInviteBox">
           <input type="text" readonly id="headerInviteLink">
           <button type="button" class="btn-copy-sm" id="btnCopyRoomLink">Скопировать</button>

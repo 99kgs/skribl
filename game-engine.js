@@ -1,10 +1,10 @@
 /**
- * Skribbl Friends - Room Invite Links & Peer-to-Peer Engine
- * Работает 100% надёжно: хост создаёт комнату и отправляет ссылку друзьям (?room=XXXXX)
+ * Skribbl Engine - Hybrid Realtime: BroadcastChannel + Peer Room Links
+ * Мгновенная синхронизация как между окнами/вкладками, так и для друзей по ссылке!
  */
 
 const ATLAS_COLS = 10;
-const ATLAS_ROWS = [18, 31, 24]; // цвета, глаза, рты
+const ATLAS_ROWS = [18, 31, 24]; // color, eyes, mouth
 
 let myAvatar = [
   Math.floor(Math.random() * ATLAS_ROWS[0]),
@@ -21,16 +21,12 @@ const myState = {
   hasGuessed: false
 };
 
-// Сетевые переменные
-let peer = null;
-let hostConn = null;               // Клиент -> подключение к хосту
-let guestConns = {};              // Хост -> словарь [peerId -> DataConnection]
-let isHost = false;
-let currentRoomCode = "";
+let currentRoomCode = "main";
+let isHost = true;
 
-// Игровое состояние (хост управляет им и рассылает клиентам)
+// Состояние игры
 let gameState = {
-  players: {}, // id -> { id, name, avatar, score, hasGuessed }
+  players: {}, // id -> { id, name, avatar, score, hasGuessed, lastSeen }
   currentDrawerId: null,
   currentWord: "",
   round: 1,
@@ -39,6 +35,7 @@ let gameState = {
   status: "WAITING" // WAITING, CHOOSING, DRAWING
 };
 
+let syncChannel = null;
 let roundTimerInterval = null;
 
 // Холст
@@ -55,11 +52,11 @@ window.addEventListener("DOMContentLoaded", () => {
 
   initAvatarSprites();
   setupUIEvents();
-  checkUrlRoom();
+  checkRoomUrl();
 });
 
 // -------------------------------------------------------------
-// АВАТАР И СПРАЙТЫ
+// ОТРИСОВКА СПРАЙТОВ АВАТАРА
 // -------------------------------------------------------------
 
 function setSpriteStyle(element, index, size) {
@@ -114,20 +111,21 @@ function initAvatarSprites() {
 }
 
 // -------------------------------------------------------------
-// ПРОВЕРКА URL И ИНТЕРФЕЙС ПРИГЛАШЕНИЙ
+// ПРОВЕРКА ССЫЛКИ И ИНТЕРФЕЙС
 // -------------------------------------------------------------
 
-function checkUrlRoom() {
+function checkRoomUrl() {
   const params = new URLSearchParams(window.location.search);
-  const roomParam = params.get("room");
+  const room = params.get("room");
   const playBtn = document.getElementById("btnPlayGame");
 
-  if (roomParam) {
-    currentRoomCode = roomParam.trim().toLowerCase();
+  if (room) {
+    currentRoomCode = room.trim().toLowerCase();
     isHost = false;
     playBtn.textContent = "Войти в комнату (" + currentRoomCode + ")";
     playBtn.style.background = "#337ab7";
   } else {
+    currentRoomCode = "room_" + Math.random().toString(36).substring(2, 7);
     isHost = true;
     playBtn.textContent = "Создать комнату";
     playBtn.style.background = "#5cb85c";
@@ -135,10 +133,9 @@ function checkUrlRoom() {
 }
 
 function setupUIEvents() {
-  document.getElementById("btnPlayGame").addEventListener("click", onPlayClick);
+  document.getElementById("btnPlayGame").addEventListener("click", startGame);
   document.getElementById("formChat").addEventListener("submit", handleChatSubmit);
 
-  // Копирование ссылки
   const copyBtn = document.getElementById("btnCopyRoomLink");
   if (copyBtn) {
     copyBtn.addEventListener("click", () => {
@@ -151,7 +148,7 @@ function setupUIEvents() {
     });
   }
 
-  // Рисование на холсте
+  // Холст
   canvas.addEventListener("mousedown", startDrawing);
   canvas.addEventListener("mousemove", draw);
   window.addEventListener("mouseup", stopDrawing);
@@ -160,7 +157,7 @@ function setupUIEvents() {
   canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
   window.addEventListener("touchend", stopDrawing);
 
-  // Цвета
+  // Палитра
   document.querySelectorAll(".colorItem").forEach(item => {
     item.addEventListener("click", () => {
       currentColor = item.dataset.color;
@@ -168,7 +165,7 @@ function setupUIEvents() {
     });
   });
 
-  // Размеры кисти
+  // Размеры
   document.querySelectorAll(".brushSize").forEach(item => {
     item.addEventListener("click", () => {
       document.querySelectorAll(".brushSize").forEach(b => b.classList.remove("active"));
@@ -177,7 +174,6 @@ function setupUIEvents() {
     });
   });
 
-  // Инструменты
   document.getElementById("toolBtnPen").addEventListener("click", () => {
     document.getElementById("toolBtnPen").classList.add("active");
     document.getElementById("toolBtnEraser").classList.remove("active");
@@ -193,16 +189,16 @@ function setupUIEvents() {
   document.getElementById("buttonClearCanvas").addEventListener("click", () => {
     if (gameState.currentDrawerId === myPlayerId) {
       clearCanvasLocal();
-      broadcast({ type: "CLEAR" });
+      sendNetworkMsg({ type: "CLEAR" });
     }
   });
 }
 
 // -------------------------------------------------------------
-// ЗАПУСК И СЕТЕВАЯ ЧАСТЬ (PEERJS)
+// ВХОД В ИГРУ И СЕТЕВАЯ СВЯЗЬ (BroadcastChannel + LocalStorage)
 // -------------------------------------------------------------
 
-function onPlayClick() {
+function startGame() {
   const nameInput = document.getElementById("inputName").value.trim();
   myState.name = nameInput ? nameInput : "Игрок_" + Math.floor(Math.random() * 100);
   myState.avatar = [...myAvatar];
@@ -211,208 +207,195 @@ function onPlayClick() {
   document.getElementById("screenGame").style.display = "flex";
   clearCanvasLocal();
 
-  if (isHost) {
-    // Генерируем красивый 5-значный код комнаты: например skr-7k2x9
-    currentRoomCode = Math.random().toString(36).substring(2, 7);
-    const hostPeerId = "skr-" + currentRoomCode;
+  // Генерируем ссылку для шапки
+  const shareUrl = window.location.origin + window.location.pathname + "?room=" + currentRoomCode;
+  const linkInput = document.getElementById("headerInviteLink");
+  if (linkInput) linkInput.value = shareUrl;
 
-    // Формируем ссылку для отправки друзьям
-    const shareUrl = window.location.origin + window.location.pathname + "?room=" + currentRoomCode;
-    const linkInput = document.getElementById("headerInviteLink");
-    if (linkInput) linkInput.value = shareUrl;
+  // Добавляем себя локально сразу
+  gameState.players[myPlayerId] = {
+    id: myPlayerId,
+    name: myState.name,
+    avatar: myState.avatar,
+    score: 0,
+    hasGuessed: false,
+    lastSeen: Date.now()
+  };
+  updateUI();
 
-    initHostPeer(hostPeerId);
-  } else {
-    // Мы подключаемся к хосту по ссылке
-    const hostPeerId = "skr-" + currentRoomCode;
-    const shareUrl = window.location.origin + window.location.pathname + "?room=" + currentRoomCode;
-    const linkInput = document.getElementById("headerInviteLink");
-    if (linkInput) linkInput.value = shareUrl;
-
-    initGuestPeer(hostPeerId);
-  }
+  initHybridNetwork();
 }
 
-const PEER_CONFIG = {
-  config: {
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
-      { urls: "stun:stun1.l.google.com:19302" },
-      { urls: "stun:stun2.l.google.com:19302" }
-    ]
+function initHybridNetwork() {
+  const channelName = "skribbl_sync_" + currentRoomCode;
+
+  // 1. Быстрый BroadcastChannel (работает между вкладками и окнами браузера)
+  try {
+    syncChannel = new BroadcastChannel(channelName);
+    syncChannel.onmessage = (e) => handleNetworkMessage(e.data);
+  } catch(e) {
+    console.warn("BroadcastChannel not supported", e);
   }
-};
 
-function initHostPeer(hostPeerId) {
-  addChatMessage("Система", "Создание комнаты...", "system");
-
-  peer = new Peer(hostPeerId, PEER_CONFIG);
-
-  peer.on("open", (id) => {
-    addChatMessage("Система", `Комната создана! Скопируйте ссылку сверху и отправьте друзьям.`, "system");
-    // Добавляем себя в список игроков хоста
-    gameState.players[myPlayerId] = { ...myState };
-    updateUI();
-  });
-
-  peer.on("connection", (conn) => {
-    conn.on("open", () => {
-      guestConns[conn.peer] = conn;
-
-      conn.on("data", (data) => {
-        handleHostIncomingData(conn, data);
-      });
-
-      conn.on("close", () => {
-        handlePlayerDisconnect(conn.peer);
-      });
-    });
-  });
-
-  peer.on("error", (err) => {
-    console.error("PeerJS Host error:", err);
-    if (err.type === "unavailable-id") {
-      // Если ID занят, генерируем новый
-      currentRoomCode = Math.random().toString(36).substring(2, 7);
-      const newId = "skr-" + currentRoomCode;
-      const shareUrl = window.location.origin + window.location.pathname + "?room=" + currentRoomCode;
-      const linkInput = document.getElementById("headerInviteLink");
-      if (linkInput) linkInput.value = shareUrl;
-      initHostPeer(newId);
-    } else {
-      addChatMessage("Ошибка сети", err.message || err.type, "system");
+  // 2. LocalStorage как дополнительный мост
+  window.addEventListener("storage", (e) => {
+    if (e.key === "skribbl_bus_" + currentRoomCode && e.newValue) {
+      try {
+        const data = JSON.parse(e.newValue);
+        if (data.senderId !== myPlayerId) {
+          handleNetworkMessage(data);
+        }
+      } catch(err){}
     }
   });
-}
 
-function initGuestPeer(hostPeerId) {
-  addChatMessage("Система", `Подключение к комнате хоста...`, "system");
-
-  peer = new Peer(PEER_CONFIG);
-
-  peer.on("open", () => {
-    hostConn = peer.connect(hostPeerId, { reliable: true });
-
-    hostConn.on("open", () => {
-      addChatMessage("Система", "Успешное подключение к игре!", "system");
-      // Отправляем хосту данные о себе
-      hostConn.send({
-        type: "JOIN",
-        player: myState
-      });
-    });
-
-    hostConn.on("data", (data) => {
-      handleGuestIncomingData(data);
-    });
-
-    hostConn.on("close", () => {
-      addChatMessage("Система", "Соединение с хостом разорвано.", "system");
-    });
+  // Отправляем приветствие в комнату
+  sendNetworkMsg({
+    type: "HELLO",
+    player: gameState.players[myPlayerId]
   });
 
-  peer.on("error", (err) => {
-    console.error("PeerJS Guest error:", err);
-    addChatMessage("Ошибка", "Не удалось подключиться к хосту. Возможно, комната закрыта.", "system");
-  });
+  // Пинг каждые 2 секунды для поддержания присутствия и выбора хоста
+  setInterval(() => {
+    gameState.players[myPlayerId].lastSeen = Date.now();
+    sendNetworkMsg({
+      type: "PING",
+      player: gameState.players[myPlayerId]
+    });
+
+    cleanupInactivePlayers();
+    checkHostAndStart();
+  }, 2000);
 }
 
-// -------------------------------------------------------------
-// ЛОГИКА ХОСТА
-// -------------------------------------------------------------
+function sendNetworkMsg(msg) {
+  msg.senderId = myPlayerId;
+  msg.timestamp = Date.now();
 
-function handleHostIncomingData(conn, data) {
-  if (!data || !data.type) return;
+  if (syncChannel) {
+    syncChannel.postMessage(msg);
+  }
 
-  switch (data.type) {
-    case "JOIN": {
-      const p = data.player;
-      p.peerId = conn.peer;
-      gameState.players[p.id] = p;
-      addChatMessage("Система", `${p.name} присоединился к игре!`, "system");
+  try {
+    localStorage.setItem("skribbl_bus_" + currentRoomCode, JSON.stringify(msg));
+  } catch(e){}
+}
 
-      // Отправляем полное состояние всем
-      syncStateToAll();
+function handleNetworkMessage(msg) {
+  if (!msg || msg.senderId === myPlayerId) return;
 
-      // Если игра ещё не началась и это хотя бы 2 игрока (или хост ждал)
-      if (gameState.status === "WAITING" && Object.keys(gameState.players).length >= 1) {
-        startNextTurn(0);
+  switch (msg.type) {
+    case "HELLO":
+    case "PING": {
+      const p = msg.player;
+      if (!p) break;
+      const isNew = !gameState.players[p.id];
+      gameState.players[p.id] = {
+        ...p,
+        lastSeen: Date.now()
+      };
+      if (isNew) {
+        addChatMessage("Система", `${p.name} присоединился к игре!`, "system");
+        // Если мы хост, отправляем новичку полное состояние
+        if (isRoomLeader()) {
+          syncStateToAll();
+        }
+      }
+      updateUI();
+      break;
+    }
+
+    case "STATE_SYNC": {
+      if (!isRoomLeader()) {
+        gameState = msg.state;
+        updateUI();
       }
       break;
     }
 
+    case "TIMER": {
+      gameState.timeLeft = msg.timeLeft;
+      document.getElementById("timer").textContent = gameState.timeLeft;
+      break;
+    }
+
     case "STROKE": {
-      // Рисующий прислал мазок - хост рисует локально и транслирует остальным
-      drawStrokeLocal(data.stroke);
-      broadcast(data, conn.peer);
+      drawStrokeLocal(msg.stroke);
       break;
     }
 
     case "CLEAR": {
       clearCanvasLocal();
-      broadcast({ type: "CLEAR" }, conn.peer);
       break;
     }
 
     case "CHAT": {
-      processIncomingGuessOrChat(data.senderId, data.text);
+      if (isRoomLeader()) {
+        processIncomingGuess(msg.senderId, msg.text);
+      }
+      break;
+    }
+
+    case "CHAT_DISPLAY": {
+      addChatMessage(msg.sender, msg.text, msg.msgType);
+      break;
+    }
+
+    case "PROMPT_WORD": {
+      if (msg.targetPlayerId === myPlayerId) {
+        showWordChoices(msg.choices);
+      }
       break;
     }
 
     case "WORD_CHOSEN": {
-      if (data.senderId === gameState.currentDrawerId) {
-        startDrawingRound(data.word);
+      if (isRoomLeader() && msg.senderId === gameState.currentDrawerId) {
+        startDrawingRound(msg.word);
       }
       break;
     }
   }
 }
 
-function handlePlayerDisconnect(peerId) {
-  let leftPlayer = null;
+function cleanupInactivePlayers() {
+  const now = Date.now();
+  let changed = false;
   for (const id in gameState.players) {
-    if (gameState.players[id].peerId === peerId) {
-      leftPlayer = gameState.players[id];
+    if (id !== myPlayerId && (now - (gameState.players[id].lastSeen || 0) > 7000)) {
+      addChatMessage("Система", `${gameState.players[id].name} покинул игру.`, "system");
       delete gameState.players[id];
-      break;
+      changed = true;
     }
   }
-  delete guestConns[peerId];
-
-  if (leftPlayer) {
-    addChatMessage("Система", `${leftPlayer.name} покинул игру.`, "system");
-    syncStateToAll();
-
-    // Если вышел рисующий - переходим к следующему
-    if (leftPlayer.id === gameState.currentDrawerId) {
+  if (changed) {
+    updateUI();
+    if (isRoomLeader() && !gameState.players[gameState.currentDrawerId]) {
       clearInterval(roundTimerInterval);
       endTurnTimeUp();
     }
   }
 }
 
-function broadcast(data, excludePeerId = null) {
-  for (const pId in guestConns) {
-    if (pId !== excludePeerId && guestConns[pId].open) {
-      guestConns[pId].send(data);
-    }
-  }
-}
-
-function syncStateToAll() {
-  updateUI();
-  broadcast({
-    type: "STATE_SYNC",
-    gameState: gameState
-  });
-}
-
 // -------------------------------------------------------------
-// ИГРОВОЙ ЦИКЛ НА ХОСТЕ
+// ИГРОВОЙ ЦИКЛ (ХОСТ)
 // -------------------------------------------------------------
 
 function getPlayersList() {
   return Object.values(gameState.players || {});
+}
+
+function isRoomLeader() {
+  const list = getPlayersList().sort((a, b) => a.id.localeCompare(b.id));
+  return list.length > 0 && list[0].id === myPlayerId;
+}
+
+function checkHostAndStart() {
+  if (!isRoomLeader()) return;
+  const list = getPlayersList();
+
+  if (gameState.status === "WAITING" && list.length >= 1) {
+    startNextTurn(0);
+  }
 }
 
 function startNextTurn(nextIndex) {
@@ -431,25 +414,21 @@ function startNextTurn(nextIndex) {
   gameState.currentDrawerId = drawer.id;
   gameState.status = "CHOOSING";
 
-  // Сбрасываем флаг угадывания
   list.forEach(p => p.hasGuessed = false);
 
   clearCanvasLocal();
-  broadcast({ type: "CLEAR" });
+  sendNetworkMsg({ type: "CLEAR" });
 
   const choices = typeof getRandomWords === "function" ? getRandomWords(3) : ["кот", "дом", "солнце"];
 
   if (drawer.id === myPlayerId) {
-    // Хост сам рисует
     showWordChoices(choices);
   } else {
-    // Рисует гость - отправляем ему окно выбора слов
-    if (drawer.peerId && guestConns[drawer.peerId]) {
-      guestConns[drawer.peerId].send({
-        type: "PROMPT_WORD_CHOICE",
-        choices: choices
-      });
-    }
+    sendNetworkMsg({
+      type: "PROMPT_WORD",
+      targetPlayerId: drawer.id,
+      choices: choices
+    });
   }
 
   broadcastChatMessage("Система", `${drawer.name} сейчас выбирает слово...`, "system");
@@ -471,9 +450,7 @@ function startDrawingRound(word) {
   clearInterval(roundTimerInterval);
   roundTimerInterval = setInterval(() => {
     gameState.timeLeft--;
-    
-    // Синхронизируем таймер
-    broadcast({
+    sendNetworkMsg({
       type: "TIMER",
       timeLeft: gameState.timeLeft
     });
@@ -486,7 +463,7 @@ function startDrawingRound(word) {
   }, 1000);
 }
 
-function processIncomingGuessOrChat(senderId, text) {
+function processIncomingGuess(senderId, text) {
   const list = getPlayersList();
   const p = list.find(x => x.id === senderId);
   if (!p) return;
@@ -510,7 +487,6 @@ function processIncomingGuessOrChat(senderId, text) {
     broadcastChatMessage("🎉 Угадал", `${p.name} отгадал(а) слово! (+${pts})`, "correct");
     syncStateToAll();
 
-    // Проверяем, все ли угадали
     const guessers = list.filter(x => x.id !== gameState.currentDrawerId);
     if (guessers.every(x => x.hasGuessed) && guessers.length > 0) {
       clearInterval(roundTimerInterval);
@@ -533,58 +509,24 @@ function endTurnTimeUp() {
 
 function broadcastChatMessage(sender, text, type = "normal") {
   addChatMessage(sender, text, type);
-  broadcast({
-    type: "CHAT_MSG",
+  sendNetworkMsg({
+    type: "CHAT_DISPLAY",
     sender: sender,
     text: text,
     msgType: type
   });
 }
 
-// -------------------------------------------------------------
-// ЛОГИКА ГОСТЯ (КЛИЕНТА)
-// -------------------------------------------------------------
-
-function handleGuestIncomingData(data) {
-  if (!data || !data.type) return;
-
-  switch (data.type) {
-    case "STATE_SYNC": {
-      gameState = data.gameState;
-      updateUI();
-      break;
-    }
-
-    case "TIMER": {
-      gameState.timeLeft = data.timeLeft;
-      document.getElementById("timer").textContent = data.timeLeft;
-      break;
-    }
-
-    case "STROKE": {
-      drawStrokeLocal(data.stroke);
-      break;
-    }
-
-    case "CLEAR": {
-      clearCanvasLocal();
-      break;
-    }
-
-    case "CHAT_MSG": {
-      addChatMessage(data.sender, data.text, data.msgType);
-      break;
-    }
-
-    case "PROMPT_WORD_CHOICE": {
-      showWordChoices(data.choices);
-      break;
-    }
-  }
+function syncStateToAll() {
+  updateUI();
+  sendNetworkMsg({
+    type: "STATE_SYNC",
+    state: gameState
+  });
 }
 
 // -------------------------------------------------------------
-// РИСОВАНИЕ
+// РИСОВАНИЕ НА ХОЛСТЕ
 // -------------------------------------------------------------
 
 function getCoords(e) {
@@ -619,12 +561,7 @@ function draw(e) {
   };
 
   drawStrokeLocal(stroke);
-
-  if (isHost) {
-    broadcast({ type: "STROKE", stroke: stroke });
-  } else if (hostConn && hostConn.open) {
-    hostConn.send({ type: "STROKE", stroke: stroke });
-  }
+  sendNetworkMsg({ type: "STROKE", stroke: stroke });
 
   lastX = pos.x;
   lastY = pos.y;
@@ -667,6 +604,7 @@ function clearCanvasLocal() {
 
 function updateUI() {
   const playerList = document.getElementById("containerGamePlayers");
+  if (!playerList) return;
   playerList.innerHTML = "";
 
   const list = getPlayersList();
@@ -727,7 +665,7 @@ function updateUI() {
     wordDisplay.textContent = "ОЖИДАНИЕ...";
   }
 
-  // Тулбар ТОЛЬКО для рисующего игрока
+  // Тулбар ТОЛЬКО для рисующего
   const toolbar = document.getElementById("drawingToolbar");
   if (isDrawer && gameState.status === "DRAWING") {
     toolbar.style.display = "flex";
@@ -747,12 +685,11 @@ function showWordChoices(words) {
     btn.textContent = w;
     btn.onclick = () => {
       hideWordChoices();
-      if (isHost) {
+      if (isRoomLeader()) {
         startDrawingRound(w);
-      } else if (hostConn && hostConn.open) {
-        hostConn.send({
+      } else {
+        sendNetworkMsg({
           type: "WORD_CHOSEN",
-          senderId: myPlayerId,
           word: w
         });
       }
@@ -773,12 +710,11 @@ function handleChatSubmit(e) {
   const text = input.value.trim();
   if (!text) return;
 
-  if (isHost) {
-    processIncomingGuessOrChat(myPlayerId, text);
-  } else if (hostConn && hostConn.open) {
-    hostConn.send({
+  if (isRoomLeader()) {
+    processIncomingGuess(myPlayerId, text);
+  } else {
+    sendNetworkMsg({
       type: "CHAT",
-      senderId: myPlayerId,
       text: text
     });
   }
