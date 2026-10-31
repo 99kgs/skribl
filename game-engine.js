@@ -53,14 +53,20 @@ let currentBrushSize = 3;
 let lastX = 0;
 let lastY = 0;
 
-window.addEventListener("DOMContentLoaded", () => {
+function bootApp() {
   canvas = document.getElementById("canvasGame");
-  ctx = canvas.getContext("2d");
+  if (canvas) ctx = canvas.getContext("2d");
 
   initAvatarSprites();
   setupUIEvents();
   parseRoomCode();
-});
+}
+
+if (document.readyState === "loading") {
+  window.addEventListener("DOMContentLoaded", bootApp);
+} else {
+  bootApp();
+}
 
 // -------------------------------------------------------------
 // Аватары и спрайты
@@ -122,7 +128,7 @@ function parseRoomCode() {
 
   // Формируем чистую ссылку для шаринга
   const fullLink = `${window.location.origin}${window.location.pathname}?room=${currentRoomCode}`;
-  const inputLink = document.getElementById("inputHeaderRoomLink");
+  const inputLink = document.getElementById("headerInviteLink");
   if (inputLink) inputLink.value = fullLink;
 }
 
@@ -130,7 +136,7 @@ function setupUIEvents() {
   const copyBtn = document.getElementById("btnCopyRoomLink") || document.getElementById("btnHeaderCopyLink");
   if (copyBtn) {
     copyBtn.addEventListener("click", () => {
-      const input = document.getElementById("headerInviteLink") || document.getElementById("inputHeaderRoomLink");
+      const input = document.getElementById("headerInviteLink") || document.getElementById("headerInviteLink");
       if (input) {
         input.select();
         navigator.clipboard.writeText(input.value).then(() => {
