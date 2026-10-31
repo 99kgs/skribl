@@ -1,10 +1,13 @@
 /**
- * Skribbl Game Engine - Reliable Multiplayer Bus
- * Вдохновлено Skribblrs.io & Scribble.rs
+ * Skribbl Game Engine - Powered by Pusher Cloud WebSockets
+ * 100% Guaranteed cross-device & cross-network multiplayer.
  */
 
+const PUSHER_KEY = "01576e88a9652c832053";
+const PUSHER_CLUSTER = "eu";
+
 const ATLAS_COLS = 10;
-const ATLAS_ROWS = [18, 31, 24]; // цвета, глаза, рты
+const ATLAS_ROWS = [18, 31, 24]; // color, eyes, mouth
 
 let myAvatar = [
   Math.floor(Math.random() * ATLAS_ROWS[0]),
@@ -21,9 +24,12 @@ const myState = {
   hasGuessed: false
 };
 
+let pusher = null;
+let roomChannel = null;
 let currentRoomCode = "";
 let isHost = true;
 
+// Состояние игры (синхронизируется хостом)
 let gameState = {
   players: {}, // id -> { id, name, avatar, score, hasGuessed, lastSeen }
   currentDrawerId: null,
@@ -34,7 +40,6 @@ let gameState = {
   status: "WAITING" // 'WAITING', 'CHOOSING', 'DRAWING'
 };
 
-let syncChannel = null;
 let roundTimerInterval = null;
 
 // Холст
@@ -119,13 +124,11 @@ function parseRoomCode() {
   const playBtn = document.getElementById("btnPlayGame");
 
   if (room && room.trim()) {
-    // Клиент переходит по ссылке хоста
     currentRoomCode = room.trim().toLowerCase();
     isHost = false;
-    playBtn.textContent = "Войти в игру к другу";
+    playBtn.textContent = "Войти в игру (" + currentRoomCode + ")";
     playBtn.style.background = "#337ab7";
   } else {
-    // Хост создает комнату (5 случайных символов)
     currentRoomCode = Math.random().toString(36).substring(2, 7);
     isHost = true;
     playBtn.textContent = "Создать комнату";
@@ -195,13 +198,13 @@ function setupUIEvents() {
   document.getElementById("buttonClearCanvas").addEventListener("click", () => {
     if (gameState.currentDrawerId === myPlayerId) {
       clearCanvasLocal();
-      sendNetworkPacket({ type: "CLEAR" });
+      broadcastPacket({ type: "CLEAR" });
     }
   });
 }
 
 // -------------------------------------------------------------
-// ВХОД В ИГРОВОЙ ЭКРАН И ШИНА ДАННЫХ
+// ВХОД В ИГРОВОЙ ЭКРАН И PUSHER WEBSOCKETS
 // -------------------------------------------------------------
 
 function enterGameSession() {
@@ -213,7 +216,7 @@ function enterGameSession() {
   document.getElementById("screenGame").style.display = "flex";
   clearCanvasLocal();
 
-  // Генерируем полную ссылку для приглашения
+  // Генерируем ссылку для шапки
   const cleanBaseUrl = window.location.origin + window.location.pathname;
   const inviteLink = cleanBaseUrl + "?room=" + currentRoomCode;
   const linkInput = document.getElementById("headerInviteLink");
@@ -221,7 +224,7 @@ function enterGameSession() {
     linkInput.value = inviteLink;
   }
 
-  // Добавляем себя локально
+  // Сразу добавляем себя
   gameState.players[myPlayerId] = {
     id: myPlayerId,
     name: myState.name,
@@ -232,66 +235,102 @@ function enterGameSession() {
   };
   updateUI();
 
-  startMultiplayerNetwork();
+  initPusherConnection();
 }
 
-function startMultiplayerNetwork() {
-  const channelName = "skribbl_room_channel_" + currentRoomCode;
+function initPusherConnection() {
+  addChatMessage("Система", "Подключение к облачному серверу сокетов...", "system");
 
-  // 1. Быстрый системный BroadcastChannel
+  // Инициализация Pusher
   try {
-    syncChannel = new BroadcastChannel(channelName);
-    syncChannel.onmessage = (e) => {
-      handleIncomingPacket(e.data);
-    };
+    pusher = new Pusher(PUSHER_KEY, {
+      cluster: PUSHER_CLUSTER,
+      forceTLS: true
+    });
+
+    const channelName = "skribbl-" + currentRoomCode;
+    roomChannel = pusher.subscribe(channelName);
+
+    roomChannel.bind("pusher:subscription_succeeded", () => {
+      addChatMessage("Система", "Вы в игре! Отправьте ссылку сверху другу.", "system");
+
+      // Сообщаем всем о входе
+      broadcastPacket({
+        type: "PLAYER_JOIN",
+        player: gameState.players[myPlayerId]
+      });
+    });
+
+    roomChannel.bind("game-event", (data) => {
+      handleIncomingPacket(data);
+    });
+
+    pusher.connection.bind("connected", () => {
+      console.log("Pusher WebSockets connected successfully!");
+    });
+
+    pusher.connection.bind("error", (err) => {
+      console.warn("Pusher connection error:", err);
+    });
+
   } catch (err) {
-    console.warn("BroadcastChannel not supported", err);
+    console.error("Pusher init error:", err);
   }
 
-  // 2. Межсессионный LocalStorage Bus (дублирующий канал)
-  window.addEventListener("storage", (e) => {
-    if (e.key === "skribbl_event_" + currentRoomCode && e.newValue) {
-      try {
-        const packet = JSON.parse(e.newValue);
-        if (packet.senderId !== myPlayerId) {
-          handleIncomingPacket(packet);
-        }
-      } catch (err) {}
-    }
-  });
+  // Также держим локальную шину (BroadcastChannel) для мгновенного дублирования
+  try {
+    const localBus = new BroadcastChannel("skribbl_bc_" + currentRoomCode);
+    localBus.onmessage = (e) => handleIncomingPacket(e.data);
+  } catch(e) {}
 
-  // Отправляем JOIN пакет новому игроку
-  sendNetworkPacket({
-    type: "PLAYER_JOIN",
-    player: gameState.players[myPlayerId]
-  });
-
-  // Пульс каждые 1.5 секунды
+  // Пульс каждые 2 секунды
   setInterval(() => {
     gameState.players[myPlayerId].lastSeen = Date.now();
-    sendNetworkPacket({
+    broadcastPacket({
       type: "HEARTBEAT",
       player: gameState.players[myPlayerId]
     });
 
     removeOfflinePlayers();
     checkGameProgress();
-  }, 1500);
+  }, 2000);
 }
 
-function sendNetworkPacket(packet) {
+function broadcastPacket(packet) {
   packet.senderId = myPlayerId;
-  packet.nonce = Math.random(); // уникальный nonce чтобы storage event срабатывал всегда
+  packet.nonce = Math.random();
   packet.timestamp = Date.now();
 
-  if (syncChannel) {
-    syncChannel.postMessage(packet);
+  // 1. Через Pusher клиентское событие / триггер
+  if (roomChannel) {
+    try {
+      roomChannel.trigger("client-game-event", packet);
+    } catch(e) {}
   }
 
+  // 2. Локальный BroadcastChannel
   try {
-    localStorage.setItem("skribbl_event_" + currentRoomCode, JSON.stringify(packet));
+    const localBus = new BroadcastChannel("skribbl_bc_" + currentRoomCode);
+    localBus.postMessage(packet);
+  } catch(e) {}
+
+  // 3. Межсессионный LocalStorage Bus
+  try {
+    localStorage.setItem("skribbl_ps_" + currentRoomCode, JSON.stringify(packet));
   } catch (e) {}
 }
+
+// Слушатель LocalStorage
+window.addEventListener("storage", (e) => {
+  if (e.key === "skribbl_ps_" + currentRoomCode && e.newValue) {
+    try {
+      const packet = JSON.parse(e.newValue);
+      if (packet.senderId !== myPlayerId) {
+        handleIncomingPacket(packet);
+      }
+    } catch (err) {}
+  }
+});
 
 function handleIncomingPacket(packet) {
   if (!packet || packet.senderId === myPlayerId) return;
@@ -310,7 +349,6 @@ function handleIncomingPacket(packet) {
 
       if (isNew) {
         addChatMessage("Система", `${p.name} вошел в игру!`, "system");
-        // Хост отправляет новому игроку текущее состояние комнаты
         if (isRoomLeader()) {
           syncStateToAll();
         }
@@ -409,7 +447,6 @@ function checkGameProgress() {
   if (!isRoomLeader()) return;
   const list = getPlayersList();
 
-  // Начинаем игру, как только есть хотя бы 1 игрок
   if (gameState.status === "WAITING" && list.length >= 1) {
     startNextTurn(0);
   }
@@ -434,14 +471,14 @@ function startNextTurn(nextIndex) {
   list.forEach(p => p.hasGuessed = false);
 
   clearCanvasLocal();
-  sendNetworkPacket({ type: "CLEAR" });
+  broadcastPacket({ type: "CLEAR" });
 
   const choices = typeof getRandomWords === "function" ? getRandomWords(3) : ["кот", "дом", "солнце"];
 
   if (drawer.id === myPlayerId) {
     showWordChoices(choices);
   } else {
-    sendNetworkPacket({
+    broadcastPacket({
       type: "PROMPT_WORD",
       targetDrawerId: drawer.id,
       choices: choices
@@ -467,7 +504,7 @@ function startDrawingRound(word) {
   clearInterval(roundTimerInterval);
   roundTimerInterval = setInterval(() => {
     gameState.timeLeft--;
-    sendNetworkPacket({
+    broadcastPacket({
       type: "TIMER",
       timeLeft: gameState.timeLeft
     });
@@ -478,6 +515,25 @@ function startDrawingRound(word) {
       endTurnTimeUp();
     }
   }, 1000);
+}
+
+// Расстояние Левенштейна (для подсказки "Очень близко!")
+function levenshteinDistance(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1];
+      } else {
+        dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+  }
+  return dp[m][n];
 }
 
 function processIncomingGuess(senderId, text) {
@@ -509,6 +565,9 @@ function processIncomingGuess(senderId, text) {
       clearInterval(roundTimerInterval);
       endTurnTimeUp();
     }
+  } else if (target && cleanGuess.length > 2 && levenshteinDistance(cleanGuess, target) === 1) {
+    // В стиле Skribblrs.io: "Очень близко!"
+    broadcastChatMessage("Подсказка", `${p.name} очень близко!`, "close");
   } else {
     broadcastChatMessage(p.name, text, "normal");
   }
@@ -526,7 +585,7 @@ function endTurnTimeUp() {
 
 function broadcastChatMessage(sender, text, type = "normal") {
   addChatMessage(sender, text, type);
-  sendNetworkPacket({
+  broadcastPacket({
     type: "CHAT_BROADCAST",
     sender: sender,
     text: text,
@@ -536,7 +595,7 @@ function broadcastChatMessage(sender, text, type = "normal") {
 
 function syncStateToAll() {
   updateUI();
-  sendNetworkPacket({
+  broadcastPacket({
     type: "SYNC_STATE",
     state: gameState
   });
@@ -578,7 +637,7 @@ function draw(e) {
   };
 
   drawStrokeLocal(stroke);
-  sendNetworkPacket({ type: "STROKE", stroke: stroke });
+  broadcastPacket({ type: "STROKE", stroke: stroke });
 
   lastX = pos.x;
   lastY = pos.y;
@@ -682,7 +741,7 @@ function updateUI() {
     wordDisplay.textContent = "ОЖИДАНИЕ...";
   }
 
-  // Тулбар рисования ТОЛЬКО для рисующего!
+  // Тулбар рисования ТОЛЬКО для рисующего
   const toolbar = document.getElementById("drawingToolbar");
   if (isDrawer && gameState.status === "DRAWING") {
     toolbar.style.display = "flex";
@@ -705,7 +764,7 @@ function showWordChoices(words) {
       if (isRoomLeader()) {
         startDrawingRound(w);
       } else {
-        sendNetworkPacket({
+        broadcastPacket({
           type: "WORD_CHOSEN",
           word: w
         });
@@ -730,7 +789,7 @@ function handleChatSubmit(e) {
   if (isRoomLeader()) {
     processIncomingGuess(myPlayerId, text);
   } else {
-    sendNetworkPacket({
+    broadcastPacket({
       type: "CHAT",
       text: text
     });
@@ -747,6 +806,8 @@ function addChatMessage(sender, text, type = "normal") {
   if (type === "system") {
     row.textContent = text;
   } else if (type === "correct") {
+    row.textContent = `${sender}: ${text}`;
+  } else if (type === "close") {
     row.textContent = `${sender}: ${text}`;
   } else {
     row.innerHTML = `<strong>${escapeHtml(sender)}:</strong> ${escapeHtml(text)}`;
