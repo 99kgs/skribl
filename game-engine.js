@@ -45,6 +45,33 @@ let currentRoomCode = "";
 let roomTopic = "";
 
 const DRAW_ROUND_SECONDS = 60;
+const CANVAS_BG = "#ffffff";
+
+function fillCanvasBackgroundWhite() {
+  if (!ctx || !canvas) return;
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = CANVAS_BG;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
+}
+
+function canvasToSnapshotDataUrl() {
+  if (!canvas) return "";
+  try {
+    const tmp = document.createElement("canvas");
+    tmp.width = canvas.width;
+    tmp.height = canvas.height;
+    const tctx = tmp.getContext("2d");
+    if (!tctx) return canvas.toDataURL("image/jpeg", 0.36);
+    tctx.fillStyle = CANVAS_BG;
+    tctx.fillRect(0, 0, tmp.width, tmp.height);
+    tctx.drawImage(canvas, 0, 0);
+    return tmp.toDataURL("image/jpeg", 0.36);
+  } catch (e) {
+    return canvas.toDataURL("image/jpeg", 0.36);
+  }
+}
 
 // Состояние игры (синхронизируется хостом)
 let gameState = {
@@ -54,13 +81,31 @@ let gameState = {
   round: 1,
   maxRounds: 3,
   timeLeft: 60,
-  status: "WAITING", // 'WAITING', 'CHOOSING', 'DRAWING'
+  status: "WAITING", // WAITING | CHOOSING | DRAWING | TURN_END
   hintRevealCount: 0,
   hintLetterIndices: [],
-  drawRoundSeconds: DRAW_ROUND_SECONDS
+  drawRoundSeconds: DRAW_ROUND_SECONDS,
+  /** Меняется каждый раунд рисования — защита от устаревших пакетов */
+  drawingEpoch: 0
 };
 
 let roundTimerInterval = null;
+
+function isPacketFromStateLeader(packet) {
+  const leaderId = getStateLeaderId(gameState.players);
+  return !!(leaderId && packet && packet.senderId === leaderId);
+}
+
+function normalizeGuessText(raw) {
+  return String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, "е");
+}
+
+function packetFromLeader(packet) {
+  return isPacketFromStateLeader(packet);
+}
 
 function resetRoundHints() {
   gameState.hintRevealCount = 0;
@@ -166,7 +211,10 @@ function shouldProcessPacket(packet) {
 
 function bootApp() {
   canvas = document.getElementById("canvasGame");
-  if (canvas) ctx = canvas.getContext("2d");
+  if (canvas) {
+    ctx = canvas.getContext("2d");
+    fillCanvasBackgroundWhite();
+  }
 
   initAvatarSprites();
   loadSavedProfile();
@@ -695,7 +743,11 @@ function handleIncomingPacket(packet) {
       };
       if (prev) {
         merged.score = Math.max(prev.score || 0, p.score || 0);
-        merged.hasGuessed = !!(prev.hasGuessed || p.hasGuessed);
+        if (isRoomLeader()) {
+          merged.hasGuessed = !!prev.hasGuessed;
+        } else {
+          merged.hasGuessed = !!(prev.hasGuessed || p.hasGuessed);
+        }
       }
       gameState.players[p.id] = merged;
 
@@ -752,6 +804,7 @@ function handleIncomingPacket(packet) {
         ? packet.state.hintLetterIndices.slice()
         : [];
       gameState.drawRoundSeconds = packet.state.drawRoundSeconds || DRAW_ROUND_SECONDS;
+      gameState.drawingEpoch = packet.state.drawingEpoch ?? gameState.drawingEpoch;
       if (packet.state.wordChoices && packet.state.wordChoices.length) {
         pendingWordChoices = packet.state.wordChoices.slice();
       }
@@ -865,11 +918,16 @@ function handleIncomingPacket(packet) {
     }
 
     case "CHAT_BROADCAST": {
-      addChatMessage(packet.senderName, packet.text, packet.messageType || "normal", packet.audience);
+      const mt = packet.messageType || "normal";
+      if ((mt === "correct" || mt === "close" || mt === "system") && !packetFromLeader(packet)) {
+        break;
+      }
+      addChatMessage(packet.senderName, packet.text, mt, packet.audience);
       break;
     }
 
     case "GUESS_RESULT": {
+      if (packet.drawingEpoch != null && packet.drawingEpoch !== gameState.drawingEpoch) break;
       if (packet.targetId === myPlayerId && gameState.players[myPlayerId]) {
         gameState.players[myPlayerId].score = packet.score;
         gameState.players[myPlayerId].hasGuessed = true;
@@ -1023,6 +1081,7 @@ function startDrawingRound(word) {
   gameState.drawRoundSeconds = DRAW_ROUND_SECONDS;
   gameState.hintRevealCount = 0;
   gameState.hintLetterIndices = pickHintLetterIndices(gameState.currentWord, 2);
+  gameState.drawingEpoch = (gameState.drawingEpoch || 0) + 1;
 
   const wLen = gameState.currentWord.length;
   broadcastChatMessage("Игра", `Раунд начался! Слово из ${wLen} ${letterWord(wLen)} — рисуй и угадывай.`, "system");
@@ -1037,6 +1096,7 @@ function startDrawingRound(word) {
 
     if (gameState.timeLeft <= 0) {
       clearInterval(roundTimerInterval);
+      roundTimerInterval = null;
       stopCanvasSnapshotLoop();
       endTurnTimeUp();
     } else {
@@ -1064,16 +1124,27 @@ function levenshteinDistance(a, b) {
 }
 
 function processIncomingGuess(playerId, rawText) {
-  const text = rawText.trim().toLowerCase();
+  const text = normalizeGuessText(rawText);
   const player = gameState.players[playerId];
   if (!player) return;
 
+  if (gameState.status !== "DRAWING" || !gameState.currentWord || gameState.timeLeft <= 0) {
+    if (playerId === gameState.currentDrawerId) {
+      broadcastChatMessage(player.name, rawText, "normal");
+    } else if (!player.hasGuessed) {
+      broadcastChatMessage(player.name, rawText, "normal");
+    } else {
+      broadcastGuessedChatMessage(player.name, rawText);
+    }
+    return;
+  }
+
+  const targetWord = normalizeGuessText(gameState.currentWord);
+
   if (playerId === gameState.currentDrawerId) {
-    if (gameState.status === "DRAWING" && gameState.currentWord) {
-      if (text === gameState.currentWord || levenshteinDistance(text, gameState.currentWord) <= 1) {
-        addChatMessage("Игра", "Рисующий не может писать загаданное слово в чат.", "system");
-        return;
-      }
+    if (text === targetWord || levenshteinDistance(text, targetWord) <= 1) {
+      addChatMessage("Игра", "Рисующий не может писать загаданное слово в чат.", "system");
+      return;
     }
     broadcastChatMessage(player.name, rawText, "normal");
     return;
@@ -1084,58 +1155,69 @@ function processIncomingGuess(playerId, rawText) {
     return;
   }
 
-  if (gameState.status === "DRAWING" && gameState.currentWord) {
-    if (text === gameState.currentWord) {
-      player.hasGuessed = true;
-      const earned = Math.max(50, gameState.timeLeft * 10);
-      player.score = (player.score || 0) + earned;
+  if (text === targetWord) {
+    player.hasGuessed = true;
+    const earned = Math.max(50, gameState.timeLeft * 10);
+    player.score = (player.score || 0) + earned;
 
-      // Очки рисующему
-      const drawer = gameState.players[gameState.currentDrawerId];
-      if (drawer) {
-        drawer.score = (drawer.score || 0) + 25;
-      }
-
-      broadcastChatMessage("Игра", `${player.name} угадал слово (+${earned} очков)!`, "correct");
-      playGameSound("guessed", 0.35);
-      updateChatInputPlaceholder();
-
-      broadcastPacket({
-        type: "GUESS_RESULT",
-        targetId: playerId,
-        score: player.score,
-        earned
-      });
-
-      const guessers = getPlayersList().filter(p => p.id !== gameState.currentDrawerId);
-      const allGuessed = guessers.length > 0 && guessers.every(p => p.hasGuessed);
-
-      if (allGuessed) {
-        clearInterval(roundTimerInterval);
-        endTurnTimeUp();
-      } else {
-        syncStateToAll();
-      }
-      return;
+    const drawer = gameState.players[gameState.currentDrawerId];
+    if (drawer) {
+      drawer.score = (drawer.score || 0) + 25;
     }
 
-    if (levenshteinDistance(text, gameState.currentWord) === 1) {
-      broadcastChatMessage("Подсказка", `"${rawText}" очень близко!`, "close");
-      return;
+    broadcastChatMessage(player.name, rawText, "normal");
+    broadcastChatMessage(
+      "Игра",
+      `${player.name} угадал слово «${rawText.trim()}» (+${earned} очков)!`,
+      "correct"
+    );
+    playGameSound("guessed", 0.35);
+    updateChatInputPlaceholder();
+
+    broadcastPacket({
+      type: "GUESS_RESULT",
+      targetId: playerId,
+      score: player.score,
+      earned,
+      drawingEpoch: gameState.drawingEpoch
+    });
+
+    const guessers = getPlayersList().filter(p => p.id !== gameState.currentDrawerId);
+    const allGuessed = guessers.length > 0 && guessers.every(p => p.hasGuessed);
+
+    if (allGuessed) {
+      endTurnTimeUp();
+    } else {
+      syncStateToAll();
     }
+    return;
+  }
+
+  if (levenshteinDistance(text, targetWord) === 1) {
+    broadcastChatMessage("Подсказка", `"${rawText}" очень близко!`, "close");
+    return;
   }
 
   broadcastChatMessage(player.name, rawText, "normal");
 }
 
 function endTurnTimeUp() {
+  if (gameState.status !== "DRAWING") return;
+  gameState.status = "TURN_END";
+  gameState.timeLeft = 0;
+  clearInterval(roundTimerInterval);
+  roundTimerInterval = null;
   stopCanvasSnapshotLoop();
+  syncStateToAll();
+
   const guessers = getPlayersList().filter(p => p.id !== gameState.currentDrawerId);
   const someoneGuessed = guessers.some(p => p.hasGuessed);
   playGameSound(someoneGuessed ? "roundSuccess" : "roundFailure", 0.3);
   broadcastChatMessage("Игра", `Раунд окончен! Загаданное слово было: "${gameState.currentWord.toUpperCase()}".`, "system");
   setTimeout(() => {
-    startNextTurn();
+    if (gameState.status === "TURN_END") {
+      startNextTurn();
+    }
   }, 3500);
 }
 
@@ -1177,6 +1259,7 @@ function syncStateToAll() {
       hintRevealCount: gameState.hintRevealCount,
       hintLetterIndices: gameState.hintLetterIndices,
       drawRoundSeconds: gameState.drawRoundSeconds,
+      drawingEpoch: gameState.drawingEpoch,
       wordChoices: gameState.status === "CHOOSING" ? pendingWordChoices : []
     }
   });
@@ -1235,7 +1318,7 @@ function pushUndoSnapshot() {
 function broadcastCanvasAfterEdit() {
   if (gameState.currentDrawerId !== myPlayerId || !canvas) return;
   try {
-    broadcastSnapshotParts(canvas.toDataURL("image/jpeg", 0.36));
+    broadcastSnapshotParts(canvasToSnapshotDataUrl());
   } catch (e) {}
 }
 
@@ -1433,7 +1516,7 @@ function startCanvasSnapshotLoop() {
     lastSnapshotSentAt = now;
     let data;
     try {
-      data = canvas.toDataURL("image/jpeg", 0.36);
+      data = canvasToSnapshotDataUrl();
     } catch (e) {
       return;
     }
@@ -1452,7 +1535,7 @@ function applyCanvasSnapshot(dataUrl) {
   if (!ctx || !dataUrl || gameState.currentDrawerId === myPlayerId) return;
   const img = new Image();
   img.onload = () => {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    fillCanvasBackgroundWhite();
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   };
   img.src = dataUrl;
@@ -1500,7 +1583,7 @@ function drawStrokeLocal(x1, y1, x2, y2, color, size) {
 
 function clearCanvasLocal() {
   if (!ctx || !canvas) return;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  fillCanvasBackgroundWhite();
   undoStack.length = 0;
   if (gameState.currentDrawerId !== myPlayerId) {
     resetRemoteDrawSync();
@@ -1639,6 +1722,8 @@ function updateGameHeader() {
     if (isDrawer && pendingWordChoices.length) {
       showWordChoices(pendingWordChoices);
     }
+  } else if (gameState.status === "TURN_END" && gameState.currentWord) {
+    setBanner("Раунд окончен", gameState.currentWord.toUpperCase(), null);
   } else {
     setBanner("Ожидание", "…", null);
   }
