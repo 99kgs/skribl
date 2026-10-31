@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>skribbl - verity.sex</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico?v=8">
+  <link rel="shortcut icon" href="favicon.ico?v=8">
+  <link rel="apple-touch-icon" href="favicon.png?v=8">
+  <link rel="icon" type="image/png" sizes="64x64" href="favicon.png?v=8">
+  <link href="main.css" rel="stylesheet">
+
+  <script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
+
+  <style>
+    /* Скрываем рекламу */
+    #head-advertice, #header-advertice, #chat-advertice, #preroll, .game-sidebar-actions, .containerPlayerListButtons { display: none !important; }
+    
+    #containerPlayerlist {
+      display: flex !important;
+      flex-direction: column !important;
+      width: 200px !important;
+      margin-right: 8px !important;
+      flex-shrink: 0 !important;
+    }
+    #containerGamePlayers {
+      display: flex !important;
+      flex-direction: column !important;
+      width: 100% !important;
+      gap: 4px !important;
+    }
+
+    .room-link-header-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 14px;
+      background: #eef2f7;
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid #cbd5e1;
+    }
+    .room-link-header-bar input {
+      font-size: 11px;
+      padding: 2px 4px;
+      border: 1px solid #aaa;
+      border-radius: 2px;
+      width: 160px;
+    }
+    .btn-copy-sm {
+      background: #5cb85c;
+      color: white;
+      border: none;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: bold;
+      border-radius: 2px;
+      cursor: pointer;
+    }
+    .btn-copy-sm:hover { background: #4cae4c; }
+
+    #word-select-modal {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    #word-select-modal .modal-box {
+      background: #ffffff;
+      padding: 24px 32px;
+      border-radius: 6px;
+      text-align: center;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    }
+    #word-select-modal h3 {
+      margin-top: 0;
+      margin-bottom: 16px;
+      color: #333;
+      font-size: 20px;
+    }
+    .word-select-buttons {
+      display: flex;
+      gap: 10px;
+    }
+    .word-btn-opt {
+      background: #5cb85c;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      font-size: 18px;
+      font-weight: bold;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .word-btn-opt:hover { background: #4cae4c; }
+
+    .hidden { display: none !important; }
+
+    #containerSidebar {
+      display: flex !important;
+      flex-direction: column !important;
+      width: 220px !important;
+      flex-shrink: 0 !important;
+      height: 600px !important;
+      max-height: 600px !important;
+      min-height: 0 !important;
+    }
+    #containerChat {
+      display: flex !important;
+      flex-direction: column !important;
+      flex: 1 1 auto !important;
+      min-height: 0 !important;
+      overflow: hidden !important;
+      height: 100% !important;
+    }
+    #boxMessages {
+      flex: 1 1 auto !important;
+      min-height: 0 !important;
+      overflow-y: auto !important;
+      overflow-x: hidden !important;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px;
+      font-size: 13px;
+      scroll-behavior: smooth;
+    }
+    #boxChatInput {
+      flex-shrink: 0 !important;
+      border-top: 1px solid #ddd;
+      background: #f8f9fa;
+    }
+    .chat-row { padding: 3px 6px; border-radius: 3px; word-break: break-word; }
+    .chat-row.system { color: #888; font-style: italic; }
+    .chat-row.correct { color: #3c763d; background-color: #dff0d8; font-weight: bold; }
+    .chat-row.close { color: #8a6d3b; background-color: #fcf8e3; font-style: italic; }
+    .chat-row.normal strong { color: #337ab7; }
+
+    .player-avatar-holder {
+      width: 48px;
+      height: 48px;
+      position: relative;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+    .player-avatar-holder .color,
+    .player-avatar-holder .eyes,
+    .player-avatar-holder .mouth {
+      position: absolute;
+      inset: 0;
+      background-size: 480px 480px;
+      background-repeat: no-repeat;
+      image-rendering: pixelated;
+    }
+    .player-avatar-holder .color { background-image: url(color_atlas.gif); }
+    .player-avatar-holder .eyes  { background-image: url(eyes_atlas.gif); }
+    .player-avatar-holder .mouth { background-image: url(mouth_atlas.gif); }
+
+    #loginAvatar .color, #loginAvatar .eyes, #loginAvatar .mouth {
+      background-size: 960px 960px;
+      background-repeat: no-repeat;
+      position: absolute;
+      inset: 0;
+      image-rendering: pixelated;
+    }
+    #loginAvatar .color { background-image: url(color_atlas.gif); }
+    #loginAvatar .eyes  { background-image: url(eyes_atlas.gif); }
+    #loginAvatar .mouth { background-image: url(mouth_atlas.gif); }
+
+    @keyframes chatRowIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes wordPulse {
+      0% { transform: scale(1); }
+      35% { transform: scale(1.04); }
+      100% { transform: scale(1); }
+    }
+    @keyframes timerUrgent {
+      0%, 100% { color: #d9534f; transform: scale(1); }
+      50% { color: #ff2a2a; transform: scale(1.08); }
+    }
+    @keyframes screenGameIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes canvasReveal {
+      from { box-shadow: 0 0 0 rgba(92, 184, 92, 0); }
+      to { box-shadow: 0 0 24px rgba(92, 184, 92, 0.35); }
+    }
+    @keyframes modalPop {
+      from { opacity: 0; transform: scale(0.92); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    @keyframes playerCardIn {
+      from { opacity: 0; transform: translateX(-8px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .chat-row-enter {
+      animation: chatRowIn 0.28s ease-out;
+    }
+    #currentWord.word-pulse {
+      animation: wordPulse 0.55s ease-out;
+    }
+    #currentWord.word-drawer-mode {
+      color: #2e7d32;
+      letter-spacing: 0.06em;
+    }
+    #currentWord.word-hint-mode {
+      color: #245195;
+      letter-spacing: 0.18em;
+      font-family: Consolas, "Courier New", monospace;
+    }
+    #timer.timer-urgent {
+      animation: timerUrgent 0.9s ease-in-out infinite;
+    }
+    #screenGame.screen-game-enter {
+      animation: screenGameIn 0.45s ease-out;
+    }
+    #canvasGame {
+      transition: box-shadow 0.3s ease;
+    }
+    #containerBoard.round-live #canvasGame {
+      animation: canvasReveal 0.6s ease-out;
+    }
+    #word-select-modal:not(.hidden) .modal-box {
+      animation: modalPop 0.35s cubic-bezier(0.34, 1.4, 0.64, 1);
+    }
+    #containerGamePlayers .player {
+      animation: playerCardIn 0.35s ease-out;
+    }
+    .word-btn-opt {
+      transition: transform 0.15s ease, background 0.15s ease;
+    }
+    .word-btn-opt:active {
+      transform: scale(0.96);
+    }
+    #btnPlayGame {
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    #btnPlayGame:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+  </style>
+</head>
+<body oncontextmenu="return false;" style="background-color:#245195; margin:0; padding:0;">
+
+  <div class="container-fluid" style="max-width:1400px; padding:0 4px;">
+    
+    <div class="header">
+      <div id="containerLogoBig" style="text-align: center; margin: 20px 0 10px 0;">
+        <a href="javascript:void(0)"><img class="logo logoBig" src="logo.gif?v=8" alt="skribbl" style="max-width: 480px; width: 90%; height: auto;"></a>
+      </div>
+    </div>
+
+    <!-- ЭКРАН ВХОДА -->
+    <div id="screenLogin">
+      <div class="login-content">
+        <div class="loginPanelContent" style="padding:8px">
+          
+          <form id="formLogin" onsubmit="return false;">
+            <div class="login">
+              <input class="form-control" id="inputName" type="text" autocomplete="off" placeholder="Введите ваш ник..." maxlength="20">
+            </div>
+
+            <div id="loginAvatarCustomizeContainer">
+              <div id="buttonAvatarCustomizerCube" title="Настроить"></div>
+              <div id="buttonAvatarCustomizerRandomize" title="Случайно"></div>
+              
+              <div class="avatarArrows" id="loginAvatarArrowsLeft">
+                <div class="avatarArrow avatarArrowLeft" data-avatarindex="1"></div>
+                <div class="avatarArrow avatarArrowLeft" data-avatarindex="2"></div>
+                <div class="avatarArrow avatarArrowLeft" data-avatarindex="0"></div>
+              </div>
+
+              <div class="avatarContainer">
+                <div class="avatar avatar-fit" id="loginAvatar">
+                  <div class="color"></div>
+                  <div class="eyes"></div>
+                  <div class="mouth"></div>
+                </div>
+              </div>
+
+              <div class="avatarArrows" id="loginAvatarArrowsRight">
+                <div class="avatarArrow avatarArrowRight" data-avatarindex="1"></div>
+                <div class="avatarArrow avatarArrowRight" data-avatarindex="2"></div>
+                <div class="avatarArrow avatarArrowRight" data-avatarindex="0"></div>
+              </div>
+            </div>
+
+            <button class="btn btn-success btn-lg btn-block" id="btnPlayGame" style="margin-top:12px; font-weight:bold; font-size:20px;" type="button">
+              Играть!
+            </button>
+          </form>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ИГРОВОЙ ЭКРАН -->
+    <div id="screenGame" style="display:none;">
+      
+      <div class="gameHeader" style="display:flex; align-items:center;">
+        <div class="timer-container">
+          <div id="timer">60</div>
+        </div>
+        <div id="round">Раунд 1 из 3</div>
+        <div id="currentWord" style="flex:1; text-align:center;">ОЖИДАНИЕ...</div>
+
+        <div class="room-link-header-bar" id="roomInviteBox">
+          <input type="text" readonly id="headerInviteLink">
+          <button type="button" class="btn-copy-sm" id="btnCopyRoomLink">Скопировать</button>
+        </div>
+      </div>
+
+      <div class="containerGame">
+        
+        <div id="containerPlayerlist">
+          <div id="containerGamePlayers"></div>
+        </div>
+
+        <div id="containerBoard">
+          <div id="containerCanvas" style="position:relative;">
+            <canvas id="canvasGame" width="800" height="600" style="background:#ffffff; cursor:crosshair;"></canvas>
+            
+            <div id="word-select-modal" class="hidden">
+              <div class="modal-box">
+                <h3>Выберите слово для рисования:</h3>
+                <div class="word-select-buttons" id="word-select-options"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="containerToolbar" id="drawingToolbar" style="display:none;">
+          <div class="containerToolbar1">
+            <div class="colorPreview" id="currentColorPreview" style="background:#000;"></div>
+            <div class="containerColorbox">
+              <div class="containerColorColumn">
+                <div class="colorItem" data-color="#ffffff" style="background:#fff"></div>
+                <div class="colorItem" data-color="#c1c1c1" style="background:#c1c1c1"></div>
+                <div class="colorItem" data-color="#ef130b" style="background:#ef130b"></div>
+                <div class="colorItem" data-color="#ff7100" style="background:#ff7100"></div>
+                <div class="colorItem" data-color="#ffe400" style="background:#ffe400"></div>
+                <div class="colorItem" data-color="#00cc00" style="background:#0c0"></div>
+                <div class="colorItem" data-color="#00b2ff" style="background:#00b2ff"></div>
+                <div class="colorItem" data-color="#231fd3" style="background:#231fd3"></div>
+                <div class="colorItem" data-color="#a300ba" style="background:#a300ba"></div>
+                <div class="colorItem" data-color="#d37caa" style="background:#d37caa"></div>
+                <div class="colorItem" data-color="#a0522d" style="background:sienna"></div>
+              </div>
+              <div class="containerColorColumn">
+                <div class="colorItem" data-color="#000000" style="background:#000"></div>
+                <div class="colorItem" data-color="#4c4c4c" style="background:#4c4c4c"></div>
+                <div class="colorItem" data-color="#740b07" style="background:#740b07"></div>
+                <div class="colorItem" data-color="#c23800" style="background:#c23800"></div>
+                <div class="colorItem" data-color="#e8a200" style="background:#e8a200"></div>
+                <div class="colorItem" data-color="#005510" style="background:#005510"></div>
+                <div class="colorItem" data-color="#00569e" style="background:#00569e"></div>
+                <div class="colorItem" data-color="#0e0865" style="background:#0e0865"></div>
+                <div class="colorItem" data-color="#550069" style="background:#550069"></div>
+                <div class="colorItem" data-color="#a75574" style="background:#a75574"></div>
+                <div class="colorItem" data-color="#63300d" style="background:#63300d"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="containerToolbar2">
+            <div class="containerTools">
+              <div class="tool active" id="toolBtnPen"><img class="toolIcon" src="pen.gif" title="Перо"></div>
+              <div class="tool" id="toolBtnEraser"><img class="toolIcon" src="rubber.gif" title="Ластик"></div>
+            </div>
+
+            <div class="containerBrushSizes">
+              <div class="brushSize active" data-size="3"><div class="sizeCenter"><div class="size size6"></div></div></div>
+              <div class="brushSize" data-size="6"><div class="sizeCenter"><div class="size size16"></div></div></div>
+              <div class="brushSize" data-size="14"><div class="sizeCenter"><div class="size size30"></div></div></div>
+              <div class="brushSize" data-size="28"><div class="sizeCenter"><div class="size size44"></div></div></div>
+            </div>
+
+            <div class="containerClearCanvas">
+              <div id="buttonClearCanvas" title="Очистить"><img class="toolIcon" src="eraser.gif" alt=""></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="containerSidebar">
+          <div id="containerChat">
+            <div id="boxMessages">
+              <div class="chat-row system">Добро пожаловать в игру! Введите догадку в поле ниже.</div>
+            </div>
+            <div id="boxChatInput">
+              <form id="formChat" class="chat-input-row" action="javascript:void(0);">
+                <input class="form-control" id="inputChat" autocomplete="off" type="text" placeholder="Введите догадку или сообщение...">
+              </form>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <script src="words.js"></script>
+  <script src="game-engine.js"></script>
+</body>
+</html>
