@@ -6,121 +6,88 @@
   <title>skribbl.io - Free Multiplayer Drawing &amp; Guessing Game</title>
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="stylesheet" type="text/css" href="css/style.css">
+  <!-- MQTT via WebSocket: 100% стабильная связь без серверов, без засыпаний и без блокировок -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
-    /* Прямое железобетонное позиционирование аватара без зависимости от внешних CSS */
+    /* Отключение рекламы */
+    .ad-1, .ad-2, .ad-side, #preroll, .button-create, #custom-invite-bar { display: none !important; }
+
+    /* Железобетонный контейнер и спрайты аватара */
     .avatar-customizer .container {
       width: 96px !important;
       height: 96px !important;
       position: relative !important;
-      display: block !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
     }
-    .custom-avatar-box {
-      width: 96px !important;
-      height: 96px !important;
-      position: relative !important;
-      display: block !important;
+    .skribbl-avatar-box {
+      width: 96px;
+      height: 96px;
+      position: relative;
     }
-    .custom-avatar-layer {
-      position: absolute !important;
-      top: 0 !important;
-      left: 0 !important;
-      width: 100% !important;
-      height: 100% !important;
-      background-size: 1000% 1000% !important;
-      background-repeat: no-repeat !important;
-      image-rendering: pixelated !important;
+    .skribbl-avatar-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 96px;
+      height: 96px;
+      background-size: 960px 960px; /* 10 колонок по 96px */
+      background-repeat: no-repeat;
+      image-rendering: pixelated;
     }
-    .layer-color { background-image: url("img/avatar/color_atlas.gif") !important; }
-    .layer-eyes  { background-image: url("img/avatar/eyes_atlas.gif") !important; }
-    .layer-mouth { background-image: url("img/avatar/mouth_atlas.gif") !important; }
 
-    .ad-1, .ad-2, .ad-side, #preroll { display: none !important; }
-    .button-create { display: none !important; }
-
-    #custom-invite-bar {
-      display: flex;
-      gap: 6px;
-      margin-top: 10px;
-    }
-    #custom-invite-bar input {
-      flex: 1;
-      font-size: 13px;
-      padding: 6px;
-      border: 1px solid #aaa;
-      border-radius: 3px;
-      text-transform: uppercase;
-      font-weight: bold;
-    }
-    .btn-flat {
-      cursor: pointer;
-      font-weight: bold;
-      border: none;
-      border-radius: 3px;
-      padding: 8px 14px;
-      color: white;
-      background: #53759e;
-    }
-    .btn-flat:hover { background: #3c577a; }
-
-    #game-word-picker-custom {
+    /* Модалка выбора слова */
+    #custom-word-picker {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.7);
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 12px;
-      position: absolute;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.65);
-      z-index: 50;
+      z-index: 100;
     }
-    #game-word-picker-custom .picker-card {
+    #custom-word-picker .box {
       background: white;
-      padding: 24px 32px;
+      padding: 24px 36px;
       border-radius: 8px;
       text-align: center;
-      box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
     }
-    #game-word-picker-custom h2 {
+    #custom-word-picker h2 {
+      font-size: 22px;
       margin-bottom: 16px;
       color: #333;
-      font-size: 20px;
     }
-    .custom-word-options {
+    .word-btns {
       display: flex;
       gap: 12px;
     }
-    .custom-word-options button {
+    .word-btn {
       background: #53759e;
       color: white;
-      font-size: 16px;
+      font-size: 18px;
       font-weight: bold;
       border: none;
-      border-radius: 4px;
-      padding: 12px 20px;
+      padding: 12px 24px;
+      border-radius: 6px;
       cursor: pointer;
-      transition: 0.15s;
     }
-    .custom-word-options button:hover {
-      background: #2b4461;
-      transform: translateY(-2px);
-    }
+    .word-btn:hover { background: #3b5575; }
+
     .hidden { display: none !important; }
 
+    /* Палитра и размеры */
     .color-swatch {
       width: 22px;
       height: 22px;
       border-radius: 2px;
       cursor: pointer;
-      border: 1px solid rgba(0,0,0,0.15);
-      transition: transform 0.1s;
+      border: 1px solid rgba(0,0,0,0.2);
     }
-    .color-swatch:hover {
-      transform: scale(1.15);
-    }
-    .color-swatch.active {
-      outline: 2px solid #000;
-      outline-offset: 1px;
-    }
+    .color-swatch.active { outline: 2px solid #000; outline-offset: 1px; }
+
     .size-dot-btn {
       width: 28px;
       height: 28px;
@@ -132,19 +99,33 @@
       border: 1px solid #ccc;
       border-radius: 3px;
     }
-    .size-dot-btn.active {
-      border-color: #53759e;
-      background: #eef2f7;
+    .size-dot-btn.active { border-color: #53759e; background: #eef2f7; }
+    .size-dot-btn span { background: #333; border-radius: 50%; display: block; }
+
+    .btn-flat {
+      cursor: pointer;
+      font-weight: bold;
+      border: none;
+      border-radius: 3px;
+      padding: 8px 14px;
+      color: white;
+      background: #53759e;
     }
-    .size-dot-btn span {
-      background: #333;
-      border-radius: 50%;
-      display: block;
+    .btn-flat:hover { background: #3c577a; }
+
+    /* Чат стили */
+    .chat-msg {
+      padding: 4px 6px;
+      border-radius: 4px;
+      word-break: break-word;
     }
+    .chat-msg.system { color: #666; font-style: italic; }
+    .chat-msg.correct { color: #16a34a; font-weight: bold; background: #dcfce7; }
   </style>
 </head>
 <body translate="no">
 
+  <!-- ГЛАВНОЕ МЕНЮ (ОРИГИНАЛ) -->
   <div id="home">
     <div class="logo-big">
       <a href="javascript:void(0)"><img src="img/logo.gif" alt="skribbl.io"></a>
@@ -167,10 +148,10 @@
             <div class="arrow left" data-avatar-index="0"></div>
           </div>
           <div class="container" id="customizer-avatar-container">
-            <div class="custom-avatar-box" id="main-custom-avatar">
-              <div class="custom-avatar-layer layer-color" id="layer-col"></div>
-              <div class="custom-avatar-layer layer-eyes" id="layer-eye"></div>
-              <div class="custom-avatar-layer layer-mouth" id="layer-mou"></div>
+            <div class="skribbl-avatar-box">
+              <div class="skribbl-avatar-layer" id="avatar-layer-color"></div>
+              <div class="skribbl-avatar-layer" id="avatar-layer-eyes"></div>
+              <div class="skribbl-avatar-layer" id="avatar-layer-mouth"></div>
             </div>
           </div>
           <div class="arrows right">
@@ -184,11 +165,6 @@
         <button class="button-play" id="btn-play-action">
           <span data-translate="text">Play!</span>
         </button>
-
-        <div id="custom-invite-bar">
-          <input type="text" id="input-direct-code" placeholder="Код комнаты друга..." autocomplete="off">
-          <button class="btn-flat" id="btn-join-direct">Войти</button>
-        </div>
       </div>
 
       <div class="panel-right"></div>
@@ -204,7 +180,7 @@
       </div>
 
       <div id="game-bar">
-        <div id="game-settings" title="Ссылка для друзей" style="cursor:pointer;">
+        <div id="game-settings" style="cursor:default;">
           <div class="icon"></div>
         </div>
         <div id="game-clock">
@@ -230,27 +206,17 @@
         <canvas id="main-draw-canvas" width="800" height="600"></canvas>
         <div class="overlay" id="canvas-overlay" style="display:none;"></div>
         
-        <div id="game-word-picker-custom" class="hidden">
-          <div class="picker-card">
-            <h2>Choose a word</h2>
-            <div class="custom-word-options" id="word-options-container"></div>
+        <!-- Выбор слова (только для рисующего) -->
+        <div id="custom-word-picker" class="hidden">
+          <div class="box">
+            <h2>Choose a word to draw:</h2>
+            <div class="word-btns" id="word-picker-options"></div>
           </div>
-        </div>
-
-        <div class="room" id="game-lobby-waiting-room" style="display:flex; flex-direction:column; align-items:center; justify-content:center; position:absolute; inset:0; background:rgba(255,255,255,0.95); z-index:40;">
-          <h2 style="margin-bottom:12px; font-size:24px; color:#333;">Комната создана!</h2>
-          <p style="margin-bottom:20px; color:#666;">Отправьте код или ссылку друзьям:</p>
-          <div id="game-invite" style="margin-bottom:20px;">
-            <div class="input-container">
-              <input type="text" readonly id="share-link-input">
-            </div>
-            <button id="btn-copy-share-link"><span>Copy</span></button>
-          </div>
-          <button id="btn-start-match" class="btn-flat" style="padding:14px 32px; font-size:18px;">Начать игру ▶</button>
         </div>
       </div>
 
-      <div id="game-toolbar">
+      <!-- Тулбар (Отображается ТОЛЬКО рисующему!) -->
+      <div id="game-toolbar" style="display:none;">
         <div class="toolbar-group-tools" style="display:flex; gap:6px; align-items:center;">
           <button id="btn-tool-pen" class="btn-flat" style="padding:6px 10px; font-size:12px;">✏️ Pen</button>
           <button id="btn-tool-eraser" class="btn-flat" style="padding:6px 10px; font-size:12px; background:#78909c;">🧹 Eraser</button>
@@ -280,12 +246,13 @@
         </div>
       </div>
 
+      <!-- Чат -->
       <div id="game-chat">
-        <div class="chat-content" id="skribbl-chat-messages" style="display:flex; flex-direction:column; gap:6px; padding:10px; overflow-y:auto; flex:1; font-size:13px;">
-          <div style="color:#777; font-style:italic;">Welcome to skribbl!</div>
+        <div class="chat-content" id="skribbl-chat-messages" style="display:flex; flex-direction:column; gap:4px; padding:10px; overflow-y:auto; flex:1; font-size:13px;">
+          <div class="chat-msg system">Добро пожаловать в игру!</div>
         </div>
         <form class="chat-form" id="skribbl-chat-form">
-          <input type="text" id="skribbl-chat-input" placeholder="Type your guess here..." maxlength="100" autocomplete="off">
+          <input type="text" id="skribbl-chat-input" placeholder="Введите ваш вариант..." maxlength="100" autocomplete="off">
         </form>
       </div>
 

@@ -1,8 +1,9 @@
 /**
- * Skribbl.io Engine - Reliable BroadcastChannel & Standalone Support
+ * Skribbl.io Engine - Single Global Room via Public MQTT over WebSockets
+ * 100% Reliable: Works anywhere, no port forwarding, no blocked P2P, no sleeping servers.
  */
 
-const AVATAR_LIMITS = [28, 57, 51];
+const AVATAR_LIMITS = [18, 31, 24]; // По размеру проверенных атласов
 let myAvatar = [
   Math.floor(Math.random() * AVATAR_LIMITS[0]),
   Math.floor(Math.random() * AVATAR_LIMITS[1]),
@@ -10,27 +11,31 @@ let myAvatar = [
   -1
 ];
 
+const myPlayerId = "u_" + Math.random().toString(36).substring(2, 9);
 const myState = {
-  id: "usr_" + Math.random().toString(36).substring(2, 9),
+  id: myPlayerId,
   name: "Player",
   avatar: myAvatar,
-  isHost: true,
   score: 0,
   hasGuessed: false
 };
 
+// ЕДИНАЯ ОБЩАЯ КОМНАТА ДЛЯ ВСЕХ ДРУЗЕЙ
+const GLOBAL_ROOM_TOPIC = "skribbl_friends_99kgs_global_room_v1";
+
 let gameState = {
-  roomCode: null,
-  players: [],
+  players: [], // { id, name, avatar, score, hasGuessed, lastSeen }
   currentDrawerId: null,
   currentWord: "",
   round: 1,
   maxRounds: 3,
   timeLeft: 60,
-  status: "LOBBY"
+  status: "WAITING" // 'WAITING', 'CHOOSING', 'DRAWING', 'TURN_END'
 };
 
-let syncChannel = null;
+let mqttClient = null;
+let heartbeatInterval = null;
+let hostElectionInterval = null;
 let roundTimerInterval = null;
 
 // Холст
@@ -47,20 +52,28 @@ window.addEventListener("DOMContentLoaded", () => {
 
   initAvatarCustomizer();
   setupEventListeners();
-  checkUrlParams();
 });
 
-function setSpritePos(el, idx, maxInRow = 10) {
+// -------------------------------------------------------------
+// АВАТАРЫ (ОТОБРАЖЕНИЕ СПРАЙТОВ)
+// -------------------------------------------------------------
+
+function setSpritePos(el, idx, spriteSize = 96) {
   if (!el) return;
-  const x = -(idx % maxInRow) * 100;
-  const y = -Math.floor(idx / maxInRow) * 100;
-  el.style.backgroundPosition = `${x}% ${y}%`;
+  const col = idx % 10;
+  const row = Math.floor(idx / 10);
+  el.style.backgroundPosition = `-${col * spriteSize}px -${row * spriteSize}px`;
 }
 
-function updateAvatarUI() {
-  const col = document.getElementById("layer-col");
-  const eye = document.getElementById("layer-eye");
-  const mou = document.getElementById("layer-mou");
+function updateMainAvatar() {
+  const col = document.getElementById("avatar-layer-color");
+  const eye = document.getElementById("avatar-layer-eyes");
+  const mou = document.getElementById("avatar-layer-mouth");
+
+  // Поддерживаем относительные пути к атласам
+  col.style.backgroundImage = 'url("color_atlas.gif")';
+  eye.style.backgroundImage = 'url("eyes_atlas.gif")';
+  mou.style.backgroundImage = 'url("mouth_atlas.gif")';
 
   setSpritePos(col, myAvatar[0] % AVATAR_LIMITS[0]);
   setSpritePos(eye, myAvatar[1] % AVATAR_LIMITS[1]);
@@ -68,56 +81,43 @@ function updateAvatarUI() {
 }
 
 function initAvatarCustomizer() {
-  updateAvatarUI();
+  updateMainAvatar();
 
-  // Стрелки влево
   document.querySelectorAll(".avatar-customizer .arrows.left .arrow").forEach(arrow => {
     arrow.addEventListener("click", () => {
       const idx = parseInt(arrow.dataset.avatarIndex, 10);
       myAvatar[idx]--;
       if (myAvatar[idx] < 0) myAvatar[idx] = AVATAR_LIMITS[idx] - 1;
-      updateAvatarUI();
+      updateMainAvatar();
     });
   });
 
-  // Стрелки вправо
   document.querySelectorAll(".avatar-customizer .arrows.right .arrow").forEach(arrow => {
     arrow.addEventListener("click", () => {
       const idx = parseInt(arrow.dataset.avatarIndex, 10);
       myAvatar[idx]++;
       if (myAvatar[idx] >= AVATAR_LIMITS[idx]) myAvatar[idx] = 0;
-      updateAvatarUI();
+      updateMainAvatar();
     });
   });
 
-  // Кнопка рандомайзера
   document.getElementById("btn-randomize-avatar").addEventListener("click", () => {
     myAvatar[0] = Math.floor(Math.random() * AVATAR_LIMITS[0]);
     myAvatar[1] = Math.floor(Math.random() * AVATAR_LIMITS[1]);
     myAvatar[2] = Math.floor(Math.random() * AVATAR_LIMITS[2]);
-    updateAvatarUI();
+    updateMainAvatar();
   });
 }
 
-function checkUrlParams() {
-  const urlParams = new URLSearchParams(window.location.search);
-  const room = urlParams.get("room");
-  if (room) {
-    document.getElementById("input-direct-code").value = room.toUpperCase();
-    document.getElementById("btn-play-action").querySelector("span").textContent = "Join Room!";
-  }
-}
+// -------------------------------------------------------------
+// ВХОД В ИГРУ (ОДИН КЛИК НА PLAY)
+// -------------------------------------------------------------
 
 function setupEventListeners() {
-  document.getElementById("btn-play-action").addEventListener("click", handlePlayClick);
-  document.getElementById("btn-join-direct").addEventListener("click", joinDirect);
-  document.getElementById("btn-start-match").addEventListener("click", startGame);
-  document.getElementById("btn-copy-share-link").addEventListener("click", copyInviteLink);
-  document.getElementById("game-settings").addEventListener("click", copyInviteLink);
-
+  document.getElementById("btn-play-action").addEventListener("click", enterSingleGame);
   document.getElementById("skribbl-chat-form").addEventListener("submit", handleChatSubmit);
 
-  // Холст
+  // Рисование
   canvas.addEventListener("mousedown", startDrawing);
   canvas.addEventListener("mousemove", draw);
   window.addEventListener("mouseup", stopDrawing);
@@ -126,7 +126,7 @@ function setupEventListeners() {
   canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
   window.addEventListener("touchend", stopDrawing);
 
-  // Цвета
+  // Палитра
   document.querySelectorAll(".color-swatch").forEach(el => {
     el.addEventListener("click", () => {
       document.querySelectorAll(".color-swatch").forEach(s => s.classList.remove("active"));
@@ -144,225 +144,241 @@ function setupEventListeners() {
     });
   });
 
-  document.getElementById("btn-tool-pen").addEventListener("click", () => {
-    currentColor = "#000000";
-  });
-
-  document.getElementById("btn-tool-eraser").addEventListener("click", () => {
-    currentColor = "#ffffff";
-  });
-
+  document.getElementById("btn-tool-pen").addEventListener("click", () => { currentColor = "#000000"; });
+  document.getElementById("btn-tool-eraser").addEventListener("click", () => { currentColor = "#ffffff"; });
   document.getElementById("btn-tool-clear").addEventListener("click", () => {
-    if (myState.id === gameState.currentDrawerId) {
+    if (gameState.currentDrawerId === myPlayerId) {
       clearCanvasLocal();
-      broadcast({ type: "CANVAS_CLEAR" });
+      sendNetworkMsg({ type: "CANVAS_CLEAR" });
     }
   });
 }
 
 function getPlayerName() {
   const val = document.getElementById("input-username").value.trim();
-  return val ? val : "Player_" + Math.floor(Math.random() * 1000);
+  return val ? val : "Player_" + Math.floor(Math.random() * 100);
 }
 
-function generateRoomCode() {
-  const chars = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-  let result = "";
-  for (let i = 0; i < 5; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-}
-
-function handlePlayClick() {
-  const directCode = document.getElementById("input-direct-code").value.trim().toUpperCase();
-  if (directCode) {
-    joinRoomWithCode(directCode);
-  } else {
-    createRoom();
-  }
-}
-
-function joinDirect() {
-  const directCode = document.getElementById("input-direct-code").value.trim().toUpperCase();
-  if (!directCode) {
-    alert("Please enter a room code!");
-    return;
-  }
-  joinRoomWithCode(directCode);
-}
-
-// Создание комнаты: моментальный переход в игру!
-function createRoom() {
+function enterSingleGame() {
   myState.name = getPlayerName();
   myState.avatar = [...myAvatar];
-  myState.isHost = true;
-  const roomCode = generateRoomCode();
-  gameState.roomCode = roomCode;
 
-  enterGameScreen();
+  document.getElementById("home").style.display = "none";
+  document.getElementById("game").style.display = "flex";
+  clearCanvasLocal();
 
-  gameState.players = [{
-    id: myState.id,
-    name: myState.name,
-    avatar: myState.avatar,
-    score: 0,
-    hasGuessed: false,
-    isHost: true
-  }];
-  updateUI();
-
-  setupRoomChannel(roomCode);
-  addChatMessage({ sender: "System", text: `Room ${roomCode} created! Share the link with friends.`, type: "system" });
+  connectToMqttBroker();
 }
 
-function joinRoomWithCode(code) {
-  myState.name = getPlayerName();
-  myState.avatar = [...myAvatar];
-  myState.isHost = false;
-  gameState.roomCode = code;
+// -------------------------------------------------------------
+// СЕТЕВОЙ БРОКЕР (ОБЩИЙ СЕРВЕР ДЛЯ ВСЕХ БЕЗ ССЫЛОК)
+// -------------------------------------------------------------
 
-  enterGameScreen();
-  document.getElementById("game-lobby-waiting-room").style.display = "none";
+function connectToMqttBroker() {
+  // Публичный открытый SSL WebSocket брокер HiveMQ
+  const brokerUrl = "wss://broker.hivemq.com:8884/mqtt";
+  mqttClient = mqtt.connect(brokerUrl, {
+    clientId: myPlayerId,
+    clean: true,
+    keepalive: 30
+  });
 
-  setupRoomChannel(code);
-  broadcast({
-    type: "PLAYER_JOIN",
-    player: {
-      id: myState.id,
-      name: myState.name,
-      avatar: myState.avatar
+  mqttClient.on("connect", () => {
+    console.log("Connected to global game room!");
+    mqttClient.subscribe(GLOBAL_ROOM_TOPIC + "/#");
+
+    // Отправляем сообщение о входе
+    sendNetworkMsg({
+      type: "PLAYER_HELLO",
+      player: {
+        id: myPlayerId,
+        name: myState.name,
+        avatar: myState.avatar,
+        score: 0
+      }
+    });
+
+    // Регулярный Heartbeat (каждые 3 сек), чтобы знать кто онлайн
+    heartbeatInterval = setInterval(() => {
+      sendNetworkMsg({
+        type: "HEARTBEAT",
+        id: myPlayerId,
+        name: myState.name,
+        avatar: myState.avatar
+      });
+      cleanupOfflinePlayers();
+      checkAndRunGameCycle();
+    }, 3000);
+  });
+
+  mqttClient.on("message", (topic, payload) => {
+    try {
+      const data = JSON.parse(payload.toString());
+      if (data.senderId === myPlayerId && data.type !== "STATE_SYNC") return;
+      handleNetworkMessage(data);
+    } catch (e) {
+      console.error(e);
     }
+  });
+
+  mqttClient.on("error", (err) => {
+    console.warn("MQTT Error:", err);
   });
 }
 
-// Канал обмена данными
-function setupRoomChannel(roomCode) {
-  try {
-    syncChannel = new BroadcastChannel("skribbl_room_" + roomCode);
-    syncChannel.onmessage = (e) => {
-      handleIncomingData(e.data);
-    };
-  } catch(e) {
-    console.warn("BroadcastChannel error:", e);
+function sendNetworkMsg(msg) {
+  if (mqttClient && mqttClient.connected) {
+    msg.senderId = myPlayerId;
+    mqttClient.publish(GLOBAL_ROOM_TOPIC + "/events", JSON.stringify(msg));
   }
 }
 
-function broadcast(msg) {
-  if (syncChannel) {
-    syncChannel.postMessage(msg);
-  }
-}
+// -------------------------------------------------------------
+// ОБРАБОТКА СЕТЕВЫХ СООБЩЕНИЙ
+// -------------------------------------------------------------
 
-function handleIncomingData(data) {
+function handleNetworkMessage(data) {
   switch (data.type) {
-    case "PLAYER_JOIN": {
-      if (myState.isHost) {
-        if (!gameState.players.find(p => p.id === data.player.id)) {
-          gameState.players.push({
-            id: data.player.id,
-            name: data.player.name,
-            avatar: data.player.avatar,
-            score: 0,
-            hasGuessed: false,
-            isHost: false
-          });
-          broadcastState();
-          broadcast({
-            type: "CHAT_MESSAGE",
-            message: { sender: "System", text: `${data.player.name} joined!`, type: "system" }
-          });
-        }
+    case "PLAYER_HELLO":
+    case "HEARTBEAT": {
+      upsertPlayer(data.player || data);
+      break;
+    }
+
+    case "STATE_SYNC": {
+      // Синхронизация состояния от ведущего
+      if (!isRoomLeader()) {
+        gameState = data.state;
+        updateUI();
       }
       break;
     }
 
-    case "STATE_SYNC":
-      gameState = data.state;
-      updateUI();
-      break;
-
-    case "DRAW_STROKE":
+    case "DRAW_STROKE": {
       drawStrokeLocal(data.stroke);
       break;
+    }
 
-    case "CANVAS_CLEAR":
+    case "CANVAS_CLEAR": {
       clearCanvasLocal();
       break;
+    }
 
-    case "WORD_CHOSEN":
-      if (myState.isHost) {
-        startRoundDrawing(data.word);
+    case "WORD_CHOSEN": {
+      if (isRoomLeader()) {
+        startDrawingRound(data.word);
       }
       break;
+    }
 
-    case "CHAT_GUESS":
-      if (myState.isHost) {
-        processGuess(data.senderId, data.text);
+    case "CHAT_GUESS": {
+      if (isRoomLeader()) {
+        processPlayerGuess(data.senderId, data.text);
       }
       break;
+    }
 
-    case "CHAT_MESSAGE":
-      addChatMessage(data.message);
+    case "CHAT_MESSAGE": {
+      addChatMessage(data.sender, data.text, data.msgType);
       break;
+    }
   }
 }
 
-function broadcastState() {
-  broadcast({ type: "STATE_SYNC", state: gameState });
+function upsertPlayer(p) {
+  const existing = gameState.players.find(x => x.id === p.id);
+  if (existing) {
+    existing.name = p.name;
+    existing.avatar = p.avatar;
+    existing.lastSeen = Date.now();
+  } else {
+    gameState.players.push({
+      id: p.id,
+      name: p.name,
+      avatar: p.avatar,
+      score: p.score || 0,
+      hasGuessed: false,
+      lastSeen: Date.now()
+    });
+    addChatMessage("Система", `${p.name} присоединился к игре!`, "system");
+  }
   updateUI();
 }
 
-function startGame() {
-  gameState.round = 1;
-  gameState.players.forEach(p => p.score = 0);
-  document.getElementById("game-lobby-waiting-room").style.display = "none";
-  startTurn(0);
+function cleanupOfflinePlayers() {
+  const now = Date.now();
+  const beforeCount = gameState.players.length;
+  gameState.players = gameState.players.filter(p => (now - p.lastSeen < 8000) || p.id === myPlayerId);
+  if (gameState.players.length !== beforeCount) {
+    updateUI();
+  }
 }
 
-function startTurn(playerIndex) {
-  if (playerIndex >= gameState.players.length) {
+// Первый игрок по алфавиту ID считается лидером комнаты (авторитетным сервером)
+function isRoomLeader() {
+  if (gameState.players.length === 0) return true;
+  const sorted = [...gameState.players].sort((a, b) => a.id.localeCompare(b.id));
+  return sorted[0].id === myPlayerId;
+}
+
+// -------------------------------------------------------------
+// ИГРОВОЙ ЦИКЛ (ЗАПУСКАЕТСЯ САМ ПРИ НАЛИЧИИ ИГРОКОВ)
+// -------------------------------------------------------------
+
+function checkAndRunGameCycle() {
+  if (!isRoomLeader()) return;
+
+  // Если игра в ожидании и есть хотя бы 1 игрок — автоматически начинаем раунд!
+  if (gameState.status === "WAITING" && gameState.players.length >= 1) {
+    startNextTurn(0);
+  }
+}
+
+function startNextTurn(nextIndex) {
+  if (nextIndex >= gameState.players.length) {
     gameState.round++;
     if (gameState.round > gameState.maxRounds) {
-      endGame();
-      return;
+      gameState.round = 1;
     }
-    startTurn(0);
-    return;
+    nextIndex = 0;
   }
 
-  const drawer = gameState.players[playerIndex];
+  const drawer = gameState.players[nextIndex];
   gameState.currentDrawerId = drawer.id;
-  gameState.status = "CHOOSING_WORD";
+  gameState.status = "CHOOSING";
   gameState.players.forEach(p => p.hasGuessed = false);
 
   clearCanvasLocal();
-  broadcast({ type: "CANVAS_CLEAR" });
+  sendNetworkMsg({ type: "CANVAS_CLEAR" });
 
-  const choices = typeof getRandomWords === "function" ? getRandomWords(3) : ["кот", "дом", "солнце"];
+  const choices = typeof getRandomWords === "function" ? getRandomWords(3) : ["кот", "дом", "машина"];
 
-  if (drawer.id === myState.id) {
+  if (drawer.id === myPlayerId) {
     showWordPicker(choices);
   }
 
-  broadcastState();
-  broadcast({
+  broadcastCurrentState();
+  sendNetworkMsg({
     type: "CHAT_MESSAGE",
-    message: { sender: "System", text: `${drawer.name} is choosing a word...`, type: "system" }
+    sender: "Система",
+    text: `${drawer.name} выбирает слово...`,
+    msgType: "system"
   });
 }
 
-function startRoundDrawing(word) {
+function startDrawingRound(word) {
   gameState.currentWord = word;
   gameState.status = "DRAWING";
   gameState.timeLeft = 60;
   hideWordPicker();
-  broadcastState();
+  broadcastCurrentState();
 
   const drawer = gameState.players.find(p => p.id === gameState.currentDrawerId);
-  broadcast({
+  sendNetworkMsg({
     type: "CHAT_MESSAGE",
-    message: { sender: "System", text: `${drawer ? drawer.name : "Player"} is drawing now!`, type: "system" }
+    sender: "Система",
+    text: `${drawer ? drawer.name : "Игрок"} начал рисовать!`,
+    msgType: "system"
   });
 
   clearInterval(roundTimerInterval);
@@ -372,21 +388,17 @@ function startRoundDrawing(word) {
       clearInterval(roundTimerInterval);
       endTurnTimeUp();
     } else {
-      broadcastState();
+      broadcastCurrentState();
     }
   }, 1000);
 }
 
-function processGuess(senderId, text) {
+function processPlayerGuess(senderId, text) {
   const p = gameState.players.find(x => x.id === senderId);
   if (!p) return;
 
   if (p.hasGuessed || senderId === gameState.currentDrawerId) {
-    addChatMessage({ sender: p.name, text: text, type: "normal" });
-    broadcast({
-      type: "CHAT_MESSAGE",
-      message: { sender: p.name, text: text, type: "normal" }
-    });
+    sendNetworkMsg({ type: "CHAT_MESSAGE", sender: p.name, text: text, msgType: "normal" });
     return;
   }
 
@@ -395,57 +407,53 @@ function processGuess(senderId, text) {
 
   if (cleanGuess === target) {
     p.hasGuessed = true;
-    const pointsAwarded = Math.max(50, gameState.timeLeft * 10);
-    p.score += pointsAwarded;
+    const points = Math.max(50, gameState.timeLeft * 10);
+    p.score += points;
 
     const drawer = gameState.players.find(x => x.id === gameState.currentDrawerId);
     if (drawer) drawer.score += 25;
 
-    broadcast({
+    sendNetworkMsg({
       type: "CHAT_MESSAGE",
-      message: { sender: "🎉 Guessed", text: `${p.name} guessed the word! (+${pointsAwarded})`, type: "correct" }
+      sender: "🎉 Угадал",
+      text: `${p.name} отгадал(а) слово! (+${points})`,
+      msgType: "correct"
     });
 
-    broadcastState();
+    broadcastCurrentState();
 
     const guessers = gameState.players.filter(x => x.id !== gameState.currentDrawerId);
-    const allGuessed = guessers.every(x => x.hasGuessed);
-    if (allGuessed && guessers.length > 0) {
+    if (guessers.every(x => x.hasGuessed) && guessers.length > 0) {
       clearInterval(roundTimerInterval);
       endTurnTimeUp();
     }
   } else {
-    broadcast({
-      type: "CHAT_MESSAGE",
-      message: { sender: p.name, text: text, type: "normal" }
-    });
+    sendNetworkMsg({ type: "CHAT_MESSAGE", sender: p.name, text: text, msgType: "normal" });
   }
 }
 
 function endTurnTimeUp() {
-  broadcast({
+  sendNetworkMsg({
     type: "CHAT_MESSAGE",
-    message: { sender: "System", text: `Time's up! The word was: "${gameState.currentWord}"`, type: "close" }
+    sender: "Система",
+    text: `Раунд окончен! Слово было: "${gameState.currentWord}"`,
+    msgType: "system"
   });
 
-  const currentIndex = gameState.players.findIndex(p => p.id === gameState.currentDrawerId);
+  const currIdx = gameState.players.findIndex(p => p.id === gameState.currentDrawerId);
   setTimeout(() => {
-    startTurn(currentIndex + 1);
+    startNextTurn(currIdx + 1);
   }, 3500);
 }
 
-function endGame() {
-  gameState.status = "GAME_OVER";
-  broadcastState();
-
-  const sorted = [...gameState.players].sort((a, b) => b.score - a.score);
-  const winner = sorted[0];
-
-  broadcast({
-    type: "CHAT_MESSAGE",
-    message: { sender: "🏆 Game Over", text: `Winner: ${winner ? winner.name : "None"} with ${winner ? winner.score : 0} points!`, type: "correct" }
-  });
+function broadcastCurrentState() {
+  sendNetworkMsg({ type: "STATE_SYNC", state: gameState });
+  updateUI();
 }
+
+// -------------------------------------------------------------
+// РИСОВАНИЕ НА ХОЛСТЕ
+// -------------------------------------------------------------
 
 function getCanvasCoords(e) {
   const rect = canvas.getBoundingClientRect();
@@ -458,7 +466,7 @@ function getCanvasCoords(e) {
 }
 
 function startDrawing(e) {
-  if (gameState.currentDrawerId !== myState.id || gameState.status !== "DRAWING") return;
+  if (gameState.currentDrawerId !== myPlayerId || gameState.status !== "DRAWING") return;
   isDrawing = true;
   const pos = getCanvasCoords(e);
   lastX = pos.x;
@@ -466,7 +474,7 @@ function startDrawing(e) {
 }
 
 function draw(e) {
-  if (!isDrawing || gameState.currentDrawerId !== myState.id || gameState.status !== "DRAWING") return;
+  if (!isDrawing || gameState.currentDrawerId !== myPlayerId || gameState.status !== "DRAWING") return;
   const pos = getCanvasCoords(e);
 
   const stroke = {
@@ -479,7 +487,7 @@ function draw(e) {
   };
 
   drawStrokeLocal(stroke);
-  broadcast({ type: "DRAW_STROKE", stroke: stroke });
+  sendNetworkMsg({ type: "DRAW_STROKE", stroke: stroke });
 
   lastX = pos.x;
   lastY = pos.y;
@@ -491,18 +499,12 @@ function stopDrawing() {
 
 function handleTouchStart(e) {
   e.preventDefault();
-  if (e.touches.length === 1) {
-    const t = e.touches[0];
-    startDrawing(t);
-  }
+  if (e.touches.length === 1) startDrawing(e.touches[0]);
 }
 
 function handleTouchMove(e) {
   e.preventDefault();
-  if (e.touches.length === 1) {
-    const t = e.touches[0];
-    draw(t);
-  }
+  if (e.touches.length === 1) draw(e.touches[0]);
 }
 
 function drawStrokeLocal(s) {
@@ -522,168 +524,156 @@ function clearCanvasLocal() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
-function enterGameScreen() {
-  document.getElementById("home").style.display = "none";
-  document.getElementById("game").style.display = "flex";
-
-  const inviteUrl = `${window.location.origin}${window.location.pathname}?room=${gameState.roomCode}`;
-  document.getElementById("share-link-input").value = inviteUrl;
-
-  clearCanvasLocal();
-}
+// -------------------------------------------------------------
+// ИНТЕРФЕЙС, СКРЫТИЕ ТУЛБАРА, ОБНОВЛЕНИЕ ЧАТА
+// -------------------------------------------------------------
 
 function updateUI() {
-  const playersContainer = document.getElementById("game-players-list");
-  playersContainer.innerHTML = "";
+  // Список игроков слева со скинами
+  const list = document.getElementById("game-players-list");
+  list.innerHTML = "";
 
-  gameState.players.forEach((p, idx) => {
-    const pCard = document.createElement("div");
-    pCard.style.cssText = `
+  gameState.players.forEach(p => {
+    const card = document.createElement("div");
+    card.style.cssText = `
       display: flex;
       align-items: center;
       gap: 8px;
       padding: 6px 8px;
       margin-bottom: 4px;
       border-radius: 4px;
-      background: ${p.hasGuessed ? "#d1fae5" : (p.id === gameState.currentDrawerId ? "#e0f2fe" : "#f1f5f9")};
-      border: 1px solid ${p.hasGuessed ? "#10b981" : "#cbd5e1"};
+      background: ${p.hasGuessed ? "#dcfce7" : (p.id === gameState.currentDrawerId ? "#e0f2fe" : "#f1f5f9")};
+      border: 1px solid ${p.hasGuessed ? "#22c55e" : "#cbd5e1"};
     `;
 
-    const avWrapper = document.createElement("div");
-    avWrapper.style.cssText = "width: 36px; height: 36px; position: relative; flex-shrink: 0;";
+    // Иконка скина игрока (36x36)
+    const avBox = document.createElement("div");
+    avBox.style.cssText = "width: 36px; height: 36px; position: relative; flex-shrink: 0; overflow: hidden;";
 
-    const col = document.createElement("div");
-    col.className = "custom-avatar-layer layer-color";
-    setSpritePos(col, p.avatar[0] % AVATAR_LIMITS[0]);
+    const cL = document.createElement("div");
+    const eL = document.createElement("div");
+    const mL = document.createElement("div");
 
-    const eye = document.createElement("div");
-    eye.className = "custom-avatar-layer layer-eyes";
-    setSpritePos(eye, p.avatar[1] % AVATAR_LIMITS[1]);
+    [cL, eL, mL].forEach(l => {
+      l.style.cssText = "position: absolute; inset: 0; background-size: 360px 360px; background-repeat: no-repeat; image-rendering: pixelated;";
+    });
 
-    const mou = document.createElement("div");
-    mou.className = "custom-avatar-layer layer-mouth";
-    setSpritePos(mou, p.avatar[2] % AVATAR_LIMITS[2]);
+    cL.style.backgroundImage = 'url("color_atlas.gif")';
+    eL.style.backgroundImage = 'url("eyes_atlas.gif")';
+    mL.style.backgroundImage = 'url("mouth_atlas.gif")';
 
-    avWrapper.appendChild(col);
-    avWrapper.appendChild(eye);
-    avWrapper.appendChild(mou);
+    setSpritePos(cL, p.avatar[0] % AVATAR_LIMITS[0], 36);
+    setSpritePos(eL, p.avatar[1] % AVATAR_LIMITS[1], 36);
+    setSpritePos(mL, p.avatar[2] % AVATAR_LIMITS[2], 36);
+
+    avBox.appendChild(cL);
+    avBox.appendChild(eL);
+    avBox.appendChild(mL);
 
     const info = document.createElement("div");
     info.style.cssText = "flex: 1; min-width: 0; line-height: 1.2;";
     info.innerHTML = `
-      <div style="font-weight: bold; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-        ${escapeHtml(p.name)} ${p.id === gameState.currentDrawerId ? "✏️" : ""}
-      </div>
-      <div style="font-size: 12px; color: #53759e; font-weight: 600;">
-        ${p.score} points
-      </div>
+      <div style="font-weight: bold; font-size: 13px;">${escapeHtml(p.name)} ${p.id === gameState.currentDrawerId ? "✏️" : ""}</div>
+      <div style="font-size: 12px; color: #53759e; font-weight: 600;">${p.score} очков</div>
     `;
 
-    pCard.appendChild(avWrapper);
-    pCard.appendChild(info);
-    playersContainer.appendChild(pCard);
+    card.appendChild(avBox);
+    card.appendChild(info);
+    list.appendChild(card);
   });
 
+  // Таймер и раунды
   document.getElementById("game-timer-display").textContent = gameState.timeLeft;
   document.getElementById("game-round-display").textContent = `Round ${gameState.round} of ${gameState.maxRounds}`;
 
-  const wordLabel = document.getElementById("game-word-label");
-  const wordDisplay = document.getElementById("game-word-current");
-  const isDrawer = (myState.id === gameState.currentDrawerId);
+  // Маска слова
+  const label = document.getElementById("game-word-label");
+  const display = document.getElementById("game-word-current");
+  const isDrawer = (gameState.currentDrawerId === myPlayerId);
 
   if (gameState.status === "DRAWING") {
     if (isDrawer) {
-      wordLabel.textContent = "DRAW THIS";
-      wordDisplay.textContent = (gameState.currentWord || "").toUpperCase();
+      label.textContent = "ТЫ РИСУЕШЬ:";
+      display.textContent = (gameState.currentWord || "").toUpperCase();
     } else {
-      wordLabel.textContent = "GUESS THIS";
-      wordDisplay.textContent = "_ ".repeat(gameState.currentWord ? gameState.currentWord.length : 4).trim();
+      label.textContent = "УГАДАЙ СЛОВО:";
+      display.textContent = "_ ".repeat(gameState.currentWord ? gameState.currentWord.length : 4).trim();
     }
-  } else if (gameState.status === "CHOOSING_WORD") {
-    wordLabel.textContent = "CHOOSING WORD...";
-    wordDisplay.textContent = "";
+  } else if (gameState.status === "CHOOSING") {
+    label.textContent = "ВЫБОР СЛОВА...";
+    display.textContent = "";
   } else {
-    wordLabel.textContent = "WAITING...";
-    wordDisplay.textContent = "";
+    label.textContent = "ОЖИДАНИЕ...";
+    display.textContent = "";
   }
 
-  if (gameState.status !== "LOBBY") {
-    document.getElementById("game-lobby-waiting-room").style.display = "none";
-  }
-
+  // ТУЛБАР: ПОКАЗЫВАЕТСЯ ТОЛЬКО ТОМУ, КТО СЕЙЧАС РИСУЕТ!
   const toolbar = document.getElementById("game-toolbar");
   if (isDrawer && gameState.status === "DRAWING") {
-    toolbar.style.opacity = "1";
-    toolbar.style.pointerEvents = "auto";
+    toolbar.style.display = "flex";
   } else {
-    toolbar.style.opacity = "0.4";
-    toolbar.style.pointerEvents = "none";
+    toolbar.style.display = "none";
   }
 }
 
 function showWordPicker(words) {
-  const modal = document.getElementById("game-word-picker-custom");
-  const container = document.getElementById("word-options-container");
-  container.innerHTML = "";
+  const modal = document.getElementById("custom-word-picker");
+  const cont = document.getElementById("word-picker-options");
+  cont.innerHTML = "";
 
   words.forEach(w => {
     const btn = document.createElement("button");
+    btn.className = "word-btn";
     btn.textContent = w;
     btn.onclick = () => {
       hideWordPicker();
-      startRoundDrawing(w);
+      if (isRoomLeader()) {
+        startDrawingRound(w);
+      } else {
+        sendNetworkMsg({ type: "WORD_CHOSEN", word: w });
+      }
     };
-    container.appendChild(btn);
+    cont.appendChild(btn);
   });
 
   modal.classList.remove("hidden");
 }
 
 function hideWordPicker() {
-  document.getElementById("game-word-picker-custom").classList.add("hidden");
+  document.getElementById("custom-word-picker").classList.add("hidden");
 }
 
+// ЧАТ
 function handleChatSubmit(e) {
   e.preventDefault();
   const input = document.getElementById("skribbl-chat-input");
   const text = input.value.trim();
   if (!text) return;
 
-  if (myState.isHost) {
-    processGuess(myState.id, text);
+  if (isRoomLeader()) {
+    processPlayerGuess(myPlayerId, text);
   } else {
-    broadcast({ type: "CHAT_GUESS", senderId: myState.id, text: text });
+    sendNetworkMsg({ type: "CHAT_GUESS", text: text });
   }
 
   input.value = "";
 }
 
-function addChatMessage(msg) {
+function addChatMessage(sender, text, type = "normal") {
   const container = document.getElementById("skribbl-chat-messages");
   const div = document.createElement("div");
+  div.className = `chat-msg ${type}`;
 
-  if (msg.type === "system") {
-    div.style.cssText = "color: #555; font-style: italic;";
-    div.textContent = msg.text;
-  } else if (msg.type === "correct") {
-    div.style.cssText = "color: #16a34a; font-weight: bold;";
-    div.textContent = msg.text;
-  } else if (msg.type === "close") {
-    div.style.cssText = "color: #d97706; font-weight: bold;";
-    div.textContent = msg.text;
+  if (type === "system") {
+    div.textContent = text;
+  } else if (type === "correct") {
+    div.textContent = `${sender}: ${text}`;
   } else {
-    div.innerHTML = `<strong>${escapeHtml(msg.sender)}:</strong> ${escapeHtml(msg.text)}`;
+    div.innerHTML = `<strong>${escapeHtml(sender)}:</strong> ${escapeHtml(text)}`;
   }
 
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
-}
-
-function copyInviteLink() {
-  const inviteUrl = `${window.location.origin}${window.location.pathname}?room=${gameState.roomCode}`;
-  navigator.clipboard.writeText(inviteUrl).then(() => {
-    alert("Invite link copied to clipboard!\n" + inviteUrl);
-  });
 }
 
 function escapeHtml(str) {
