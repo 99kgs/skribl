@@ -5,11 +5,28 @@
   <title>skribbl - Рисуй и Угадывай</title>
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link href="main.css" rel="stylesheet">
+  <!-- Надежная публичная библиотека P2P комнат Trystero (через общедоступные серверы Nostr/MQTT) -->
+  <script src="https://cdn.jsdelivr.net/npm/trystero@0.20.1/dist/trystero-torrent.min.js"></script>
   <style>
-    /* Отключение рекламы и лишних блоков */
+    /* Убираем всю рекламу */
     #head-advertice, #header-advertice, #chat-advertice, #preroll, .game-sidebar-actions, .containerPlayerListButtons { display: none !important; }
     
-    /* Окно выбора слова */
+    /* Корректное отображение списка игроков */
+    #containerPlayerlist {
+      display: flex !important;
+      flex-direction: column !important;
+      width: 200px !important;
+      margin-right: 8px !important;
+      flex-shrink: 0 !important;
+    }
+    #containerGamePlayers {
+      display: flex !important;
+      flex-direction: column !important;
+      width: 100% !important;
+      gap: 4px !important;
+    }
+
+    /* Модалка выбора слова */
     #word-select-modal {
       position: absolute;
       inset: 0;
@@ -41,8 +58,8 @@
       background: #5cb85c;
       color: white;
       border: none;
-      padding: 10px 20px;
-      font-size: 16px;
+      padding: 12px 24px;
+      font-size: 18px;
       font-weight: bold;
       border-radius: 4px;
       cursor: pointer;
@@ -51,28 +68,53 @@
 
     .hidden { display: none !important; }
 
-    /* Чат стили */
+    /* Чат */
     #boxMessages {
-      overflow-y: auto;
-      flex: 1;
-      padding: 8px;
+      overflow-y: auto !important;
+      height: calc(100% - 44px) !important;
       display: flex;
       flex-direction: column;
       gap: 4px;
+      padding: 8px;
       font-size: 13px;
     }
-    .chat-row { padding: 2px 4px; border-radius: 3px; word-break: break-word; }
+    .chat-row { padding: 3px 6px; border-radius: 3px; word-break: break-word; }
     .chat-row.system { color: #888; font-style: italic; }
     .chat-row.correct { color: #3c763d; background-color: #dff0d8; font-weight: bold; }
     .chat-row.normal strong { color: #337ab7; }
 
-    /* Позиционирование аватара */
-    .avatar .color, .avatar .eyes, .avatar .mouth {
-      background-size: 480px 480px;
+    /* Позиционирование аватаров в игре */
+    .player-avatar-holder {
+      width: 48px;
+      height: 48px;
+      position: relative;
+      flex-shrink: 0;
+      overflow: hidden;
     }
+    .player-avatar-holder .color,
+    .player-avatar-holder .eyes,
+    .player-avatar-holder .mouth {
+      position: absolute;
+      inset: 0;
+      background-size: 480px 480px;
+      background-repeat: no-repeat;
+      image-rendering: pixelated;
+    }
+    .player-avatar-holder .color { background-image: url(color_atlas.gif); }
+    .player-avatar-holder .eyes  { background-image: url(eyes_atlas.gif); }
+    .player-avatar-holder .mouth { background-image: url(mouth_atlas.gif); }
+
+    /* Позиционирование аватара в меню логина */
     #loginAvatar .color, #loginAvatar .eyes, #loginAvatar .mouth {
       background-size: 960px 960px;
+      background-repeat: no-repeat;
+      position: absolute;
+      inset: 0;
+      image-rendering: pixelated;
     }
+    #loginAvatar .color { background-image: url(color_atlas.gif); }
+    #loginAvatar .eyes  { background-image: url(eyes_atlas.gif); }
+    #loginAvatar .mouth { background-image: url(mouth_atlas.gif); }
   </style>
 </head>
 <body oncontextmenu="return false;" style="background-color:#245195; margin:0; padding:0;">
@@ -86,7 +128,7 @@
       </div>
     </div>
 
-    <!-- ЭКРАН ВХОДА (ОРИГИНАЛ SKRIBBL.RU) -->
+    <!-- ЭКРАН ВХОДА -->
     <div id="screenLogin">
       <div class="login-content">
         <div class="loginPanelContent" style="padding:8px">
@@ -122,7 +164,7 @@
               </div>
             </div>
 
-            <!-- ЕДИНАЯ КНОПКА ВХОДА -->
+            <!-- КНОПКА ВХОДА -->
             <button class="btn btn-success btn-lg btn-block" id="btnPlayGame" style="margin-top:12px; font-weight:bold; font-size:20px;" type="button">
               Играть!
             </button>
@@ -132,7 +174,7 @@
       </div>
     </div>
 
-    <!-- ИГРОВОЙ ЭКРАН (1 В 1 РАЗМЕТКА SKRIBBL.RU) -->
+    <!-- ИГРОВОЙ ЭКРАН -->
     <div id="screenGame" style="display:none;">
       
       <div class="gameHeader">
@@ -140,7 +182,7 @@
           <div id="timer">60</div>
         </div>
         <div id="round">Раунд 1 из 3</div>
-        <div id="currentWord">_ _ _ _</div>
+        <div id="currentWord">ОЖИДАНИЕ...</div>
       </div>
 
       <div class="containerGame">
@@ -165,7 +207,7 @@
           </div>
         </div>
 
-        <!-- Тулбар рисования (скрывается у тех, кто угадывает) -->
+        <!-- Тулбар рисования (ТОЛЬКО для рисующего!) -->
         <div class="containerToolbar" id="drawingToolbar" style="display:none;">
           <div class="containerToolbar1">
             <div class="colorPreview" id="currentColorPreview" style="background:#000;"></div>
@@ -222,11 +264,11 @@
         <div id="containerSidebar">
           <div id="containerChat">
             <div id="boxMessages">
-              <div class="chat-row system">Добро пожаловать в игру! Введите догадку в чат.</div>
+              <div class="chat-row system">Добро пожаловать в игру! Введите догадку в поле ниже.</div>
             </div>
             <div id="boxChatInput">
               <form id="formChat" class="chat-input-row" action="javascript:void(0);">
-                <input class="form-control" id="inputChat" autocomplete="off" type="text" placeholder="Ваш вариант...">
+                <input class="form-control" id="inputChat" autocomplete="off" type="text" placeholder="Введите догадку или сообщение...">
               </form>
             </div>
           </div>
