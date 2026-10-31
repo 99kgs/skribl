@@ -8,7 +8,8 @@ const { Server } = require("socket.io");
 
 const app = express();
 app.use(cors({ origin: "*" }));
-app.get("/", (_req, res) => res.send("skribbl websocket ok"));
+app.get("/", (_req, res) => res.type("text").send("skribbl websocket ok"));
+app.get("/health", (_req, res) => res.json({ ok: true, service: "skribbl-verity-server" }));
 
 const server = http.createServer(app);
 const io = new Server(server, {
