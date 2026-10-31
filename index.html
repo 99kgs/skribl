@@ -277,6 +277,74 @@
       transform: translateY(-1px);
       box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     }
+
+    .board-with-toolbar {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      flex: 1;
+      min-width: 0;
+    }
+    .draw-toolbar-strip {
+      display: none;
+      flex-direction: row;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 8px 10px;
+      background: #f3f3f3;
+      border: 1px solid #ccc;
+      border-top: none;
+      max-width: 800px;
+      box-sizing: border-box;
+    }
+    .draw-toolbar-strip[style*="flex"] {
+      display: flex !important;
+    }
+    .draw-toolbar-colors {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+    }
+    .draw-colors-row {
+      display: flex !important;
+      flex-direction: row !important;
+      gap: 2px;
+    }
+    .draw-colors-row .containerColorColumn {
+      flex-direction: row !important;
+      flex-wrap: wrap;
+      max-width: 220px;
+    }
+    .draw-toolbar-sizes {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 6px;
+      border-left: 1px solid #ccc;
+      border-right: 1px solid #ccc;
+    }
+    .draw-toolbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .draw-toolbar-actions .tool,
+    .draw-toolbar-sizes .brushSize {
+      cursor: pointer;
+      border: 2px solid transparent;
+      border-radius: 4px;
+      padding: 2px;
+    }
+    .draw-toolbar-actions .tool.active,
+    .draw-toolbar-sizes .brushSize.active {
+      border-color: #337ab7;
+      background: #e8f4fc;
+    }
+    .size.size4 { width: 4px; height: 4px; }
+    .size.size10 { width: 10px; height: 10px; }
+    .size.size24 { width: 24px; height: 24px; }
+    .size.size36 { width: 36px; height: 36px; }
   </style>
 </head>
 <body oncontextmenu="return false;" style="background-color:#245195; margin:0; padding:0;">
@@ -355,7 +423,7 @@
           <div id="containerGamePlayers"></div>
         </div>
 
-        <div id="containerBoard">
+        <div id="containerBoard" class="board-with-toolbar">
           <div id="containerCanvas" style="position:relative;">
             <canvas id="canvasGame" width="800" height="600" style="background:#ffffff; cursor:crosshair;"></canvas>
             
@@ -366,56 +434,58 @@
               </div>
             </div>
           </div>
-        </div>
 
-        <div class="containerToolbar" id="drawingToolbar" style="display:none;">
-          <div class="containerToolbar1">
-            <div class="colorPreview" id="currentColorPreview" style="background:#000;"></div>
-            <div class="containerColorbox">
-              <div class="containerColorColumn">
-                <div class="colorItem" data-color="#ffffff" style="background:#fff"></div>
-                <div class="colorItem" data-color="#c1c1c1" style="background:#c1c1c1"></div>
-                <div class="colorItem" data-color="#ef130b" style="background:#ef130b"></div>
-                <div class="colorItem" data-color="#ff7100" style="background:#ff7100"></div>
-                <div class="colorItem" data-color="#ffe400" style="background:#ffe400"></div>
-                <div class="colorItem" data-color="#00cc00" style="background:#0c0"></div>
-                <div class="colorItem" data-color="#00b2ff" style="background:#00b2ff"></div>
-                <div class="colorItem" data-color="#231fd3" style="background:#231fd3"></div>
-                <div class="colorItem" data-color="#a300ba" style="background:#a300ba"></div>
-                <div class="colorItem" data-color="#d37caa" style="background:#d37caa"></div>
-                <div class="colorItem" data-color="#a0522d" style="background:sienna"></div>
+          <div class="containerToolbar draw-toolbar-strip" id="drawingToolbar" style="display:none;">
+            <div class="draw-toolbar-colors">
+              <div class="colorPreview" id="currentColorPreview" style="background:#000;"></div>
+              <div class="containerColorbox draw-colors-row">
+                <div class="containerColorColumn">
+                  <div class="colorItem" data-color="#ffffff" style="background:#fff"></div>
+                  <div class="colorItem" data-color="#c1c1c1" style="background:#c1c1c1"></div>
+                  <div class="colorItem" data-color="#ef130b" style="background:#ef130b"></div>
+                  <div class="colorItem" data-color="#ff7100" style="background:#ff7100"></div>
+                  <div class="colorItem" data-color="#ffe400" style="background:#ffe400"></div>
+                  <div class="colorItem" data-color="#00cc00" style="background:#0c0"></div>
+                  <div class="colorItem" data-color="#00b2ff" style="background:#00b2ff"></div>
+                  <div class="colorItem" data-color="#231fd3" style="background:#231fd3"></div>
+                  <div class="colorItem" data-color="#a300ba" style="background:#a300ba"></div>
+                  <div class="colorItem" data-color="#d37caa" style="background:#d37caa"></div>
+                  <div class="colorItem" data-color="#a0522d" style="background:sienna"></div>
+                </div>
+                <div class="containerColorColumn">
+                  <div class="colorItem" data-color="#000000" style="background:#000"></div>
+                  <div class="colorItem" data-color="#4c4c4c" style="background:#4c4c4c"></div>
+                  <div class="colorItem" data-color="#740b07" style="background:#740b07"></div>
+                  <div class="colorItem" data-color="#c23800" style="background:#c23800"></div>
+                  <div class="colorItem" data-color="#e8a200" style="background:#e8a200"></div>
+                  <div class="colorItem" data-color="#005510" style="background:#005510"></div>
+                  <div class="colorItem" data-color="#00569e" style="background:#00569e"></div>
+                  <div class="colorItem" data-color="#0e0865" style="background:#0e0865"></div>
+                  <div class="colorItem" data-color="#550069" style="background:#550069"></div>
+                  <div class="colorItem" data-color="#a75574" style="background:#a75574"></div>
+                  <div class="colorItem" data-color="#63300d" style="background:#63300d"></div>
+                </div>
               </div>
-              <div class="containerColorColumn">
-                <div class="colorItem" data-color="#000000" style="background:#000"></div>
-                <div class="colorItem" data-color="#4c4c4c" style="background:#4c4c4c"></div>
-                <div class="colorItem" data-color="#740b07" style="background:#740b07"></div>
-                <div class="colorItem" data-color="#c23800" style="background:#c23800"></div>
-                <div class="colorItem" data-color="#e8a200" style="background:#e8a200"></div>
-                <div class="colorItem" data-color="#005510" style="background:#005510"></div>
-                <div class="colorItem" data-color="#00569e" style="background:#00569e"></div>
-                <div class="colorItem" data-color="#0e0865" style="background:#0e0865"></div>
-                <div class="colorItem" data-color="#550069" style="background:#550069"></div>
-                <div class="colorItem" data-color="#a75574" style="background:#a75574"></div>
-                <div class="colorItem" data-color="#63300d" style="background:#63300d"></div>
-              </div>
-            </div>
-          </div>
-
-          <div class="containerToolbar2">
-            <div class="containerTools">
-              <div class="tool active" id="toolBtnPen"><img class="toolIcon" src="pen.gif" title="Перо"></div>
-              <div class="tool" id="toolBtnEraser"><img class="toolIcon" src="rubber.gif" title="Ластик"></div>
             </div>
 
-            <div class="containerBrushSizes">
-              <div class="brushSize active" data-size="3"><div class="sizeCenter"><div class="size size6"></div></div></div>
-              <div class="brushSize" data-size="6"><div class="sizeCenter"><div class="size size16"></div></div></div>
-              <div class="brushSize" data-size="14"><div class="sizeCenter"><div class="size size30"></div></div></div>
-              <div class="brushSize" data-size="28"><div class="sizeCenter"><div class="size size44"></div></div></div>
+            <div class="draw-toolbar-sizes" id="brushSizeRow">
+              <div class="brushSize" data-size="2" title="2px"><div class="sizeCenter"><div class="size size4"></div></div></div>
+              <div class="brushSize active" data-size="4" title="4px"><div class="sizeCenter"><div class="size size6"></div></div></div>
+              <div class="brushSize" data-size="8" title="8px"><div class="sizeCenter"><div class="size size10"></div></div></div>
+              <div class="brushSize" data-size="14" title="14px"><div class="sizeCenter"><div class="size size16"></div></div></div>
+              <div class="brushSize" data-size="22" title="22px"><div class="sizeCenter"><div class="size size24"></div></div></div>
+              <div class="brushSize" data-size="32" title="32px"><div class="sizeCenter"><div class="size size30"></div></div></div>
+              <div class="brushSize" data-size="44" title="44px"><div class="sizeCenter"><div class="size size36"></div></div></div>
+              <div class="brushSize" data-size="56" title="56px"><div class="sizeCenter"><div class="size size44"></div></div></div>
             </div>
 
-            <div class="containerClearCanvas">
-              <div id="buttonClearCanvas" title="Очистить"><img class="toolIcon" src="eraser.gif" alt=""></div>
+            <div class="draw-toolbar-actions">
+              <div class="tool active" data-tool="pen" id="toolBtnPen" title="Кисть"><img class="toolIcon" src="pen.gif" alt=""></div>
+              <div class="tool" data-tool="eraser" id="toolBtnEraser" title="Ластик"><img class="toolIcon" src="rubber.gif" alt=""></div>
+              <div class="tool" data-tool="fill" id="toolBtnFill" title="Заливка"><img class="toolIcon" src="filltool.gif" alt=""></div>
+              <div class="tool" data-tool="fillall" id="toolBtnFillAll" title="Залить всё"><img class="toolIcon" src="fill_graphic.png" alt=""></div>
+              <div class="tool" data-tool="undo" id="toolBtnUndo" title="Отмена"><img class="toolIcon" src="undo.gif" alt=""></div>
+              <div class="tool" data-tool="clear" id="buttonClearCanvas" title="Очистить"><img class="toolIcon" src="eraser.gif" alt=""></div>
             </div>
           </div>
         </div>

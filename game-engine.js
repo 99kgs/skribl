@@ -60,7 +60,7 @@ let roundTimerInterval = null;
 let canvas, ctx;
 let isDrawing = false;
 let currentColor = "#000000";
-let currentBrushSize = 3;
+let currentBrushSize = 4;
 let lastX = 0;
 let lastY = 0;
 let drawStrokeSeq = 0;
@@ -72,8 +72,13 @@ let nextRemoteBatchSeq = 0;
 let canvasSnapshotTimer = null;
 let lastSnapshotSentAt = 0;
 let lastPlayerListSignature = "";
+let pendingWordChoices = [];
+let currentTool = "pen";
+const undoStack = [];
+const UNDO_MAX = 40;
 let snapshotChunkBuffers = {};
 let snapshotFrameCounter = 0;
+let lastWordChoicesRequestAt = 0;
 
 function packetDedupeKey(packet) {
   if (packet.nonce != null && packet.senderId) {
@@ -226,12 +231,9 @@ function setupUIEvents() {
   document.querySelectorAll(".colorItem").forEach(item => {
     item.addEventListener("click", () => {
       currentColor = item.dataset.color;
+      setActiveTool("pen");
       const preview = document.getElementById("currentColorPreview");
       if (preview) preview.style.background = currentColor;
-      const pen = document.getElementById("toolBtnPen");
-      const eraser = document.getElementById("toolBtnEraser");
-      if (pen) pen.classList.add("active");
-      if (eraser) eraser.classList.remove("active");
     });
   });
 
@@ -240,42 +242,44 @@ function setupUIEvents() {
       document.querySelectorAll(".brushSize").forEach(b => b.classList.remove("active"));
       item.classList.add("active");
       currentBrushSize = parseInt(item.dataset.size, 10);
+      setActiveTool(currentTool === "eraser" ? "eraser" : "pen");
     });
   });
 
-  const toolPen = document.getElementById("toolBtnPen");
-  if (toolPen) {
-    toolPen.addEventListener("click", () => {
-      toolPen.classList.add("active");
-      const eraser = document.getElementById("toolBtnEraser");
-      if (eraser) eraser.classList.remove("active");
-      const preview = document.getElementById("currentColorPreview");
-      currentColor = (preview && preview.style.background) ? preview.style.background : "#000000";
-    });
-  }
-
-  const toolEraser = document.getElementById("toolBtnEraser");
-  if (toolEraser) {
-    toolEraser.addEventListener("click", () => {
-      toolEraser.classList.add("active");
-      const pen = document.getElementById("toolBtnPen");
-      if (pen) pen.classList.remove("active");
-      currentColor = "#ffffff";
-    });
-  }
-
-  const btnClear = document.getElementById("buttonClearCanvas");
-  if (btnClear) {
-    btnClear.addEventListener("click", () => {
-      if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
-        clearCanvasLocal();
-        broadcastPacket({ type: "CLEAR" });
-        if (useSocketRelay && gameSocket && gameSocket.connected) {
-          gameSocket.emit("clear");
+  document.querySelectorAll(".draw-toolbar-actions .tool[data-tool]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const tool = btn.dataset.tool;
+      if (tool === "undo") {
+        undoCanvas();
+        return;
+      }
+      if (tool === "clear") {
+        if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
+          pushUndoSnapshot();
+          clearCanvasLocal();
+          broadcastPacket({ type: "CLEAR" });
+          if (useSocketRelay && gameSocket && gameSocket.connected) {
+            gameSocket.emit("clear");
+          }
         }
+        return;
+      }
+      if (tool === "fillall") {
+        if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
+          fillEntireCanvas(currentColor);
+        }
+        setActiveTool("fillall");
+        return;
+      }
+      setActiveTool(tool);
+      if (tool === "eraser") {
+        currentColor = "#ffffff";
+      } else if (tool === "pen") {
+        const preview = document.getElementById("currentColorPreview");
+        currentColor = (preview && preview.style.background) ? preview.style.background : "#000000";
       }
     });
-  }
+  });
 
   if (canvas) {
     canvas.addEventListener("mousedown", startDrawing);
@@ -580,6 +584,9 @@ function handleIncomingPacket(packet) {
       gameState.maxRounds = packet.state.maxRounds;
       gameState.timeLeft = packet.state.timeLeft;
       gameState.status = packet.state.status;
+      if (packet.state.wordChoices && packet.state.wordChoices.length) {
+        pendingWordChoices = packet.state.wordChoices.slice();
+      }
 
       Object.keys(statePlayers).forEach(id => {
         if (id === myPlayerId) {
@@ -598,6 +605,8 @@ function handleIncomingPacket(packet) {
       updateGameHeader();
       if (packet.state.status === "DRAWING") {
         hideWordChoices();
+      } else if (packet.state.status === "CHOOSING" && gameState.currentDrawerId === myPlayerId && pendingWordChoices.length) {
+        showWordChoices(pendingWordChoices);
       }
       break;
     }
@@ -651,9 +660,21 @@ function handleIncomingPacket(packet) {
 
     case "WORD_CHOICES": {
       if (packet.targetId === myPlayerId) {
-        showWordChoices(packet.choices || []);
+        pendingWordChoices = packet.choices || [];
+        showWordChoices(pendingWordChoices);
       } else {
         hideWordChoices();
+      }
+      break;
+    }
+
+    case "REQUEST_WORD_CHOICES": {
+      if (isRoomLeader() && pendingWordChoices.length) {
+        broadcastPacket({
+          type: "WORD_CHOICES",
+          targetId: packet.requesterId || gameState.currentDrawerId,
+          choices: pendingWordChoices
+        });
       }
       break;
     }
@@ -756,6 +777,8 @@ function startNextTurn() {
     if (!choices.includes(randomWord)) choices.push(randomWord);
   }
 
+  pendingWordChoices = choices.slice();
+
   gameState.status = "CHOOSING";
   gameState.currentWord = "";
   gameState.timeLeft = 15;
@@ -777,13 +800,11 @@ function startNextTurn() {
     drawerId: gameState.currentDrawerId
   });
 
-  if (gameState.currentDrawerId !== myPlayerId) {
-    broadcastPacket({
-      type: "WORD_CHOICES",
-      targetId: gameState.currentDrawerId,
-      choices
-    });
-  }
+  broadcastPacket({
+    type: "WORD_CHOICES",
+    targetId: gameState.currentDrawerId,
+    choices: pendingWordChoices
+  });
 
   const drawerName = gameState.players[gameState.currentDrawerId]?.name || "Игрок";
   broadcastChatMessage("Игра", `${drawerName} выбирает слово...`, "system");
@@ -807,6 +828,7 @@ function startNextTurn() {
 function startDrawingRound(word) {
   clearInterval(roundTimerInterval);
   hideWordChoices();
+  pendingWordChoices = [];
   gameState.status = "DRAWING";
   gameState.currentWord = word.toLowerCase();
   gameState.timeLeft = 60;
@@ -944,7 +966,8 @@ function syncStateToAll() {
       round: gameState.round,
       maxRounds: gameState.maxRounds,
       timeLeft: gameState.timeLeft,
-      status: gameState.status
+      status: gameState.status,
+      wordChoices: gameState.status === "CHOOSING" ? pendingWordChoices : []
     }
   });
 }
@@ -971,9 +994,124 @@ function getCoords(e) {
   };
 }
 
+function setActiveTool(tool) {
+  currentTool = tool;
+  document.querySelectorAll(".draw-toolbar-actions .tool[data-tool]").forEach(el => {
+    if (el.dataset.tool === "undo" || el.dataset.tool === "clear") return;
+    el.classList.toggle("active", el.dataset.tool === tool);
+  });
+}
+
+function pushUndoSnapshot() {
+  if (!ctx || !canvas) return;
+  try {
+    undoStack.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+    if (undoStack.length > UNDO_MAX) undoStack.shift();
+  } catch (e) {}
+}
+
+function broadcastCanvasAfterEdit() {
+  if (gameState.currentDrawerId !== myPlayerId || !canvas) return;
+  try {
+    broadcastSnapshotParts(canvas.toDataURL("image/jpeg", 0.36));
+  } catch (e) {}
+}
+
+function undoCanvas() {
+  if (gameState.currentDrawerId !== myPlayerId || gameState.status !== "DRAWING") return;
+  if (!undoStack.length) return;
+  const data = undoStack.pop();
+  ctx.putImageData(data, 0, 0);
+  broadcastCanvasAfterEdit();
+}
+
+function fillEntireCanvas(color) {
+  if (!ctx || !canvas) return;
+  pushUndoSnapshot();
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  broadcastCanvasAfterEdit();
+}
+
+function parseColorToRgba(cssColor) {
+  const probe = document.createElement("canvas").getContext("2d");
+  if (!probe) return [0, 0, 0, 255];
+  probe.fillStyle = "#000";
+  probe.fillStyle = cssColor;
+  const parsed = probe.fillStyle;
+  if (parsed.startsWith("#")) {
+    const hex = parsed.length === 4
+      ? parsed.slice(1).split("").map(c => c + c).join("")
+      : parsed.slice(1);
+    return [
+      parseInt(hex.slice(0, 2), 16),
+      parseInt(hex.slice(2, 4), 16),
+      parseInt(hex.slice(4, 6), 16),
+      255
+    ];
+  }
+  const m = parsed.match(/rgba?\(([^)]+)\)/);
+  if (!m) return [0, 0, 0, 255];
+  const p = m[1].split(",").map(v => parseFloat(v.trim()));
+  return [p[0], p[1], p[2], p[3] !== undefined ? Math.round(p[3] * 255) : 255];
+}
+
+function floodFillAt(x, y, fillCss) {
+  if (!ctx || !canvas) return;
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  if (ix < 0 || iy < 0 || ix >= canvas.width || iy >= canvas.height) return;
+
+  pushUndoSnapshot();
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = img.data;
+  const w = canvas.width;
+  const h = canvas.height;
+  const startIdx = (iy * w + ix) * 4;
+  const target = [data[startIdx], data[startIdx + 1], data[startIdx + 2], data[startIdx + 3]];
+  const fill = parseColorToRgba(fillCss);
+
+  if (target[0] === fill[0] && target[1] === fill[1] && target[2] === fill[2] && target[3] === fill[3]) {
+    undoStack.pop();
+    return;
+  }
+
+  const stack = [[ix, iy]];
+  const match = (idx) =>
+    data[idx] === target[0] && data[idx + 1] === target[1] &&
+    data[idx + 2] === target[2] && data[idx + 3] === target[3];
+
+  while (stack.length) {
+    const [cx, cy] = stack.pop();
+    const idx = (cy * w + cx) * 4;
+    if (!match(idx)) continue;
+    data[idx] = fill[0];
+    data[idx + 1] = fill[1];
+    data[idx + 2] = fill[2];
+    data[idx + 3] = fill[3];
+    if (cx > 0) stack.push([cx - 1, cy]);
+    if (cx < w - 1) stack.push([cx + 1, cy]);
+    if (cy > 0) stack.push([cx, cy - 1]);
+    if (cy < h - 1) stack.push([cx, cy + 1]);
+  }
+
+  ctx.putImageData(img, 0, 0);
+  broadcastCanvasAfterEdit();
+}
+
 function startDrawing(e) {
   if (gameState.currentDrawerId !== myPlayerId || gameState.status !== "DRAWING") return;
+
+  if (currentTool === "fill") {
+    const coords = getCoords(e);
+    floodFillAt(coords.x, coords.y, currentColor);
+    return;
+  }
+
+  if (currentTool !== "pen" && currentTool !== "eraser") return;
+
   isDrawing = true;
+  pushUndoSnapshot();
   const coords = getCoords(e);
   lastX = coords.x;
   lastY = coords.y;
@@ -981,6 +1119,7 @@ function startDrawing(e) {
 
 function draw(e) {
   if (!isDrawing || gameState.currentDrawerId !== myPlayerId || gameState.status !== "DRAWING") return;
+  if (currentTool !== "pen" && currentTool !== "eraser") return;
   const coords = getCoords(e);
 
   drawStrokeLocal(lastX, lastY, coords.x, coords.y, currentColor, currentBrushSize);
@@ -1139,6 +1278,7 @@ function drawStrokeLocal(x1, y1, x2, y2, color, size) {
 function clearCanvasLocal() {
   if (!ctx || !canvas) return;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  undoStack.length = 0;
   if (gameState.currentDrawerId !== myPlayerId) {
     resetRemoteDrawSync();
   }
@@ -1247,13 +1387,25 @@ function updateGameHeader() {
     }
   } else if (gameState.status === "CHOOSING") {
     wordDisplay.textContent = "ВЫБОР СЛОВА...";
+    if (isDrawer && pendingWordChoices.length) {
+      showWordChoices(pendingWordChoices);
+    }
   } else {
     wordDisplay.textContent = "ОЖИДАНИЕ...";
   }
 
   const toolbar = document.getElementById("drawingToolbar");
   if (toolbar) {
-    toolbar.style.display = (isDrawer && gameState.status === "DRAWING") ? "flex" : "none";
+    const showBar = isDrawer && gameState.status === "DRAWING";
+    toolbar.style.display = showBar ? "flex" : "none";
+  }
+
+  if (gameState.status === "CHOOSING" && gameState.currentDrawerId === myPlayerId && !pendingWordChoices.length) {
+    const now = Date.now();
+    if (now - lastWordChoicesRequestAt > 2500) {
+      lastWordChoicesRequestAt = now;
+      broadcastPacket({ type: "REQUEST_WORD_CHOICES", requesterId: myPlayerId });
+    }
   }
 
   updateChatInputPlaceholder();
