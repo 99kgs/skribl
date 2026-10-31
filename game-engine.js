@@ -282,9 +282,26 @@ function setupUIEvents() {
   });
 
   if (canvas) {
-    canvas.addEventListener("mousedown", startDrawing);
+    canvas.addEventListener("mousedown", (e) => {
+      if (e.button === 2) {
+        e.preventDefault();
+        if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
+          setActiveTool("eraser");
+          currentColor = "#ffffff";
+        }
+      }
+      startDrawing(e);
+    });
     canvas.addEventListener("mousemove", draw);
     window.addEventListener("mouseup", stopDrawing);
+
+    canvas.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
+        setActiveTool("eraser");
+        currentColor = "#ffffff";
+      }
+    });
 
     canvas.addEventListener("touchstart", handleTouchStart, { passive: false });
     canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
@@ -459,6 +476,8 @@ function initNetworkConnection() {
   setInterval(() => {
     if (gameState.players[myPlayerId]) {
       gameState.players[myPlayerId].lastSeen = Date.now();
+      gameState.players[myPlayerId].score = gameState.players[myPlayerId].score || 0;
+      gameState.players[myPlayerId].hasGuessed = !!gameState.players[myPlayerId].hasGuessed;
       broadcastPacket({
         type: "HEARTBEAT",
         player: gameState.players[myPlayerId]
@@ -537,13 +556,22 @@ function handleIncomingPacket(packet) {
       if (!p) break;
       const isNew = !gameState.players[p.id];
 
-      gameState.players[p.id] = {
+      const prev = gameState.players[p.id];
+      const merged = {
         ...p,
         lastSeen: Date.now()
       };
+      if (prev) {
+        merged.score = Math.max(prev.score || 0, p.score || 0);
+        merged.hasGuessed = !!(prev.hasGuessed || p.hasGuessed);
+      }
+      gameState.players[p.id] = merged;
 
       if (isNew) {
         addChatMessage("Сеть", `${p.name} присоединился к игре!`, "system");
+      }
+      if (isNew || (prev && (prev.score !== merged.score || prev.hasGuessed !== merged.hasGuessed))) {
+        lastPlayerListSignature = "";
       }
       updatePlayerList();
       updateGameHeader();
@@ -695,6 +723,17 @@ function handleIncomingPacket(packet) {
 
     case "CHAT_BROADCAST": {
       addChatMessage(packet.senderName, packet.text, packet.messageType || "normal", packet.audience);
+      break;
+    }
+
+    case "GUESS_RESULT": {
+      if (packet.targetId === myPlayerId && gameState.players[myPlayerId]) {
+        gameState.players[myPlayerId].score = packet.score;
+        gameState.players[myPlayerId].hasGuessed = true;
+        lastPlayerListSignature = "";
+        updatePlayerList();
+        updateGameHeader();
+      }
       break;
     }
   }
@@ -902,6 +941,13 @@ function processIncomingGuess(playerId, rawText) {
 
       broadcastChatMessage("Игра", `${player.name} угадал слово (+${earned} очков)!`, "correct");
       updateChatInputPlaceholder();
+
+      broadcastPacket({
+        type: "GUESS_RESULT",
+        targetId: playerId,
+        score: player.score,
+        earned
+      });
 
       const guessers = getPlayersList().filter(p => p.id !== gameState.currentDrawerId);
       const allGuessed = guessers.length > 0 && guessers.every(p => p.hasGuessed);
