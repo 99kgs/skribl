@@ -1,5 +1,5 @@
 /**
- * Skribbl.io Engine - Reliable BroadcastChannel & Fallback Connection
+ * Skribbl.io Engine - Reliable BroadcastChannel & Standalone Support
  */
 
 const AVATAR_LIMITS = [28, 57, 51];
@@ -14,7 +14,7 @@ const myState = {
   id: "usr_" + Math.random().toString(36).substring(2, 9),
   name: "Player",
   avatar: myAvatar,
-  isHost: false,
+  isHost: true,
   score: 0,
   hasGuessed: false
 };
@@ -30,14 +30,11 @@ let gameState = {
   status: "LOBBY"
 };
 
-let peer = null;
-let hostConn = null;
-let clientConns = new Map();
+let syncChannel = null;
 let roundTimerInterval = null;
 
 // Холст
-const canvas = document.getElementById("main-draw-canvas");
-const ctx = canvas.getContext("2d");
+let canvas, ctx;
 let isDrawing = false;
 let currentColor = "#000000";
 let currentBrushSize = 3;
@@ -45,55 +42,33 @@ let lastX = 0;
 let lastY = 0;
 
 window.addEventListener("DOMContentLoaded", () => {
+  canvas = document.getElementById("main-draw-canvas");
+  ctx = canvas.getContext("2d");
+
   initAvatarCustomizer();
   setupEventListeners();
   checkUrlParams();
 });
 
-function createAvatarElement(avatarData, isOwner = false) {
-  const av = document.createElement("div");
-  av.className = "avatar";
-
-  const col = document.createElement("div");
-  col.className = "color";
-
-  const eyes = document.createElement("div");
-  eyes.className = "eyes";
-
-  const mouth = document.createElement("div");
-  mouth.className = "mouth";
-
-  av.appendChild(col);
-  av.appendChild(eyes);
-  av.appendChild(mouth);
-
-  updateAvatarSprites(av, avatarData);
-  return av;
+function setSpritePos(el, idx, maxInRow = 10) {
+  if (!el) return;
+  const x = -(idx % maxInRow) * 100;
+  const y = -Math.floor(idx / maxInRow) * 100;
+  el.style.backgroundPosition = `${x}% ${y}%`;
 }
 
-function updateAvatarSprites(avatarEl, data) {
-  function setSprite(el, idx, maxInRow = 10) {
-    const x = -(idx % maxInRow) * 100;
-    const y = -Math.floor(idx / maxInRow) * 100;
-    el.style.backgroundPosition = `${x}% ${y}%`;
-  }
+function updateAvatarUI() {
+  const col = document.getElementById("layer-col");
+  const eye = document.getElementById("layer-eye");
+  const mou = document.getElementById("layer-mou");
 
-  const colEl = avatarEl.querySelector(".color");
-  const eyesEl = avatarEl.querySelector(".eyes");
-  const mouthEl = avatarEl.querySelector(".mouth");
-
-  if (colEl) setSprite(colEl, data[0] % AVATAR_LIMITS[0]);
-  if (eyesEl) setSprite(eyesEl, data[1] % AVATAR_LIMITS[1]);
-  if (mouthEl) setSprite(mouthEl, data[2] % AVATAR_LIMITS[2]);
+  setSpritePos(col, myAvatar[0] % AVATAR_LIMITS[0]);
+  setSpritePos(eye, myAvatar[1] % AVATAR_LIMITS[1]);
+  setSpritePos(mou, myAvatar[2] % AVATAR_LIMITS[2]);
 }
-
-let lobbyAvatarEl = null;
 
 function initAvatarCustomizer() {
-  const container = document.getElementById("customizer-avatar-container");
-  container.innerHTML = "";
-  lobbyAvatarEl = createAvatarElement(myAvatar, false);
-  container.appendChild(lobbyAvatarEl);
+  updateAvatarUI();
 
   // Стрелки влево
   document.querySelectorAll(".avatar-customizer .arrows.left .arrow").forEach(arrow => {
@@ -101,7 +76,7 @@ function initAvatarCustomizer() {
       const idx = parseInt(arrow.dataset.avatarIndex, 10);
       myAvatar[idx]--;
       if (myAvatar[idx] < 0) myAvatar[idx] = AVATAR_LIMITS[idx] - 1;
-      updateAvatarSprites(lobbyAvatarEl, myAvatar);
+      updateAvatarUI();
     });
   });
 
@@ -111,7 +86,7 @@ function initAvatarCustomizer() {
       const idx = parseInt(arrow.dataset.avatarIndex, 10);
       myAvatar[idx]++;
       if (myAvatar[idx] >= AVATAR_LIMITS[idx]) myAvatar[idx] = 0;
-      updateAvatarSprites(lobbyAvatarEl, myAvatar);
+      updateAvatarUI();
     });
   });
 
@@ -120,7 +95,7 @@ function initAvatarCustomizer() {
     myAvatar[0] = Math.floor(Math.random() * AVATAR_LIMITS[0]);
     myAvatar[1] = Math.floor(Math.random() * AVATAR_LIMITS[1]);
     myAvatar[2] = Math.floor(Math.random() * AVATAR_LIMITS[2]);
-    updateAvatarSprites(lobbyAvatarEl, myAvatar);
+    updateAvatarUI();
   });
 }
 
@@ -217,7 +192,7 @@ function joinDirect() {
   joinRoomWithCode(directCode);
 }
 
-// Создание комнаты (Мгновенный вход)
+// Создание комнаты: моментальный переход в игру!
 function createRoom() {
   myState.name = getPlayerName();
   myState.avatar = [...myAvatar];
@@ -225,9 +200,7 @@ function createRoom() {
   const roomCode = generateRoomCode();
   gameState.roomCode = roomCode;
 
-  // Входим в игровой экран сразу
   enterGameScreen();
-  document.getElementById("btn-start-match").style.display = "inline-block";
 
   gameState.players = [{
     id: myState.id,
@@ -239,46 +212,8 @@ function createRoom() {
   }];
   updateUI();
 
-  // Инициализация P2P соединения
-  initHostPeer(roomCode);
-}
-
-function initHostPeer(roomCode) {
-  try {
-    if (peer) peer.destroy();
-  } catch(e){}
-
-  const peerId = "skr-" + roomCode.toLowerCase();
-  peer = new Peer(peerId, {
-    config: {
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" }
-      ]
-    }
-  });
-
-  peer.on("open", (id) => {
-    console.log("Room open on peer:", id);
-    addChatMessage({ sender: "System", text: `Room ${roomCode} is ready! Share the link with friends.`, type: "system" });
-  });
-
-  peer.on("connection", (conn) => {
-    conn.on("open", () => {
-      clientConns.set(conn.peer, conn);
-    });
-
-    conn.on("data", (data) => {
-      handleHostReceivedData(conn.peer, data);
-    });
-
-    conn.on("close", () => {
-      handlePlayerDisconnect(conn.peer);
-    });
-  });
-
-  peer.on("error", (err) => {
-    console.warn("Peer error, offline fallback mode active:", err.type);
-  });
+  setupRoomChannel(roomCode);
+  addChatMessage({ sender: "System", text: `Room ${roomCode} created! Share the link with friends.`, type: "system" });
 }
 
 function joinRoomWithCode(code) {
@@ -290,103 +225,58 @@ function joinRoomWithCode(code) {
   enterGameScreen();
   document.getElementById("game-lobby-waiting-room").style.display = "none";
 
-  const targetPeerId = "skr-" + code.toLowerCase();
-  peer = new Peer({
-    config: {
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" }
-      ]
+  setupRoomChannel(code);
+  broadcast({
+    type: "PLAYER_JOIN",
+    player: {
+      id: myState.id,
+      name: myState.name,
+      avatar: myState.avatar
     }
-  });
-
-  peer.on("open", (id) => {
-    myState.id = id;
-    hostConn = peer.connect(targetPeerId, { reliable: true });
-
-    hostConn.on("open", () => {
-      hostConn.send({
-        type: "PLAYER_JOIN",
-        player: {
-          id: myState.id,
-          name: myState.name,
-          avatar: myState.avatar
-        }
-      });
-    });
-
-    hostConn.on("data", (data) => {
-      handleClientReceivedData(data);
-    });
-
-    hostConn.on("close", () => {
-      alert("Host disconnected!");
-      location.reload();
-    });
-  });
-
-  peer.on("error", (err) => {
-    alert("Connection error: " + err.type + ". Make sure the host is currently in the room!");
   });
 }
 
-function broadcast(message) {
-  if (myState.isHost) {
-    clientConns.forEach(conn => {
-      if (conn.open) conn.send(message);
-    });
-  } else if (hostConn && hostConn.open) {
-    hostConn.send(message);
+// Канал обмена данными
+function setupRoomChannel(roomCode) {
+  try {
+    syncChannel = new BroadcastChannel("skribbl_room_" + roomCode);
+    syncChannel.onmessage = (e) => {
+      handleIncomingData(e.data);
+    };
+  } catch(e) {
+    console.warn("BroadcastChannel error:", e);
   }
 }
 
-function handleHostReceivedData(senderId, data) {
+function broadcast(msg) {
+  if (syncChannel) {
+    syncChannel.postMessage(msg);
+  }
+}
+
+function handleIncomingData(data) {
   switch (data.type) {
     case "PLAYER_JOIN": {
-      const newPlayer = {
-        id: senderId,
-        name: data.player.name,
-        avatar: data.player.avatar,
-        score: 0,
-        hasGuessed: false,
-        isHost: false
-      };
-      gameState.players.push(newPlayer);
-      broadcastState();
-      broadcast({
-        type: "CHAT_MESSAGE",
-        message: { sender: "System", text: `${newPlayer.name} joined!`, type: "system" }
-      });
+      if (myState.isHost) {
+        if (!gameState.players.find(p => p.id === data.player.id)) {
+          gameState.players.push({
+            id: data.player.id,
+            name: data.player.name,
+            avatar: data.player.avatar,
+            score: 0,
+            hasGuessed: false,
+            isHost: false
+          });
+          broadcastState();
+          broadcast({
+            type: "CHAT_MESSAGE",
+            message: { sender: "System", text: `${data.player.name} joined!`, type: "system" }
+          });
+        }
+      }
       break;
     }
 
-    case "DRAW_STROKE": {
-      clientConns.forEach((conn, id) => {
-        if (id !== senderId && conn.open) conn.send(data);
-      });
-      drawStrokeLocal(data.stroke);
-      break;
-    }
-
-    case "CANVAS_CLEAR": {
-      clearCanvasLocal();
-      broadcast(data);
-      break;
-    }
-
-    case "WORD_CHOSEN": {
-      startRoundDrawing(data.word);
-      break;
-    }
-
-    case "CHAT_GUESS": {
-      processGuess(senderId, data.text);
-      break;
-    }
-  }
-}
-
-function handleClientReceivedData(data) {
-  switch (data.type) {
     case "STATE_SYNC":
       gameState = data.state;
       updateUI();
@@ -400,8 +290,16 @@ function handleClientReceivedData(data) {
       clearCanvasLocal();
       break;
 
-    case "SHOW_WORD_PICKER":
-      showWordPicker(data.words);
+    case "WORD_CHOSEN":
+      if (myState.isHost) {
+        startRoundDrawing(data.word);
+      }
+      break;
+
+    case "CHAT_GUESS":
+      if (myState.isHost) {
+        processGuess(data.senderId, data.text);
+      }
       break;
 
     case "CHAT_MESSAGE":
@@ -410,35 +308,12 @@ function handleClientReceivedData(data) {
   }
 }
 
-function handlePlayerDisconnect(playerId) {
-  const p = gameState.players.find(x => x.id === playerId);
-  clientConns.delete(playerId);
-  gameState.players = gameState.players.filter(x => x.id !== playerId);
-  if (p) {
-    addChatMessage({ sender: "System", text: `${p.name} left.`, type: "system" });
-    broadcastState();
-  }
-}
-
 function broadcastState() {
-  if (!myState.isHost) return;
-
-  clientConns.forEach((conn, id) => {
-    const isDrawingPlayer = (id === gameState.currentDrawerId);
-    const sanitizedState = JSON.parse(JSON.stringify(gameState));
-    if (!isDrawingPlayer && gameState.status === "DRAWING") {
-      sanitizedState.currentWord = "";
-    }
-    if (conn.open) {
-      conn.send({ type: "STATE_SYNC", state: sanitizedState });
-    }
-  });
-
+  broadcast({ type: "STATE_SYNC", state: gameState });
   updateUI();
 }
 
 function startGame() {
-  if (!myState.isHost) return;
   gameState.round = 1;
   gameState.players.forEach(p => p.score = 0);
   document.getElementById("game-lobby-waiting-room").style.display = "none";
@@ -464,15 +339,10 @@ function startTurn(playerIndex) {
   clearCanvasLocal();
   broadcast({ type: "CANVAS_CLEAR" });
 
-  const choices = getRandomWords(3);
+  const choices = typeof getRandomWords === "function" ? getRandomWords(3) : ["кот", "дом", "солнце"];
 
   if (drawer.id === myState.id) {
     showWordPicker(choices);
-  } else {
-    const conn = clientConns.get(drawer.id);
-    if (conn) {
-      conn.send({ type: "SHOW_WORD_PICKER", words: choices });
-    }
   }
 
   broadcastState();
@@ -681,8 +551,22 @@ function updateUI() {
 
     const avWrapper = document.createElement("div");
     avWrapper.style.cssText = "width: 36px; height: 36px; position: relative; flex-shrink: 0;";
-    const avEl = createAvatarElement(p.avatar, p.isHost);
-    avWrapper.appendChild(avEl);
+
+    const col = document.createElement("div");
+    col.className = "custom-avatar-layer layer-color";
+    setSpritePos(col, p.avatar[0] % AVATAR_LIMITS[0]);
+
+    const eye = document.createElement("div");
+    eye.className = "custom-avatar-layer layer-eyes";
+    setSpritePos(eye, p.avatar[1] % AVATAR_LIMITS[1]);
+
+    const mou = document.createElement("div");
+    mou.className = "custom-avatar-layer layer-mouth";
+    setSpritePos(mou, p.avatar[2] % AVATAR_LIMITS[2]);
+
+    avWrapper.appendChild(col);
+    avWrapper.appendChild(eye);
+    avWrapper.appendChild(mou);
 
     const info = document.createElement("div");
     info.style.cssText = "flex: 1; min-width: 0; line-height: 1.2;";
@@ -747,11 +631,7 @@ function showWordPicker(words) {
     btn.textContent = w;
     btn.onclick = () => {
       hideWordPicker();
-      if (myState.isHost) {
-        startRoundDrawing(w);
-      } else {
-        hostConn.send({ type: "WORD_CHOSEN", word: w });
-      }
+      startRoundDrawing(w);
     };
     container.appendChild(btn);
   });
@@ -772,7 +652,7 @@ function handleChatSubmit(e) {
   if (myState.isHost) {
     processGuess(myState.id, text);
   } else {
-    hostConn.send({ type: "CHAT_GUESS", text: text });
+    broadcast({ type: "CHAT_GUESS", senderId: myState.id, text: text });
   }
 
   input.value = "";

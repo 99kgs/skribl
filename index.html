@@ -6,38 +6,33 @@
   <title>skribbl.io - Free Multiplayer Drawing &amp; Guessing Game</title>
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="stylesheet" type="text/css" href="css/style.css">
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
-    /* Гарантированные стили для кастомайзера скина */
+    /* Прямое железобетонное позиционирование аватара без зависимости от внешних CSS */
     .avatar-customizer .container {
       width: 96px !important;
       height: 96px !important;
-      position: relative;
-    }
-    .avatar {
-      position: relative;
-      width: 100% !important;
-      height: 100% !important;
+      position: relative !important;
       display: block !important;
     }
-    .avatar .color, .avatar .eyes, .avatar .mouth {
-      position: absolute;
-      top: 0;
-      left: 0;
+    .custom-avatar-box {
+      width: 96px !important;
+      height: 96px !important;
+      position: relative !important;
+      display: block !important;
+    }
+    .custom-avatar-layer {
+      position: absolute !important;
+      top: 0 !important;
+      left: 0 !important;
       width: 100% !important;
       height: 100% !important;
       background-size: 1000% 1000% !important;
       background-repeat: no-repeat !important;
+      image-rendering: pixelated !important;
     }
-    .avatar .color {
-      background-image: url("img/avatar/color_atlas.gif") !important;
-    }
-    .avatar .eyes {
-      background-image: url("img/avatar/eyes_atlas.gif") !important;
-    }
-    .avatar .mouth {
-      background-image: url("img/avatar/mouth_atlas.gif") !important;
-    }
+    .layer-color { background-image: url("img/avatar/color_atlas.gif") !important; }
+    .layer-eyes  { background-image: url("img/avatar/eyes_atlas.gif") !important; }
+    .layer-mouth { background-image: url("img/avatar/mouth_atlas.gif") !important; }
 
     .ad-1, .ad-2, .ad-side, #preroll { display: none !important; }
     .button-create { display: none !important; }
@@ -171,7 +166,13 @@
             <div class="arrow left" data-avatar-index="2"></div>
             <div class="arrow left" data-avatar-index="0"></div>
           </div>
-          <div class="container" id="customizer-avatar-container"></div>
+          <div class="container" id="customizer-avatar-container">
+            <div class="custom-avatar-box" id="main-custom-avatar">
+              <div class="custom-avatar-layer layer-color" id="layer-col"></div>
+              <div class="custom-avatar-layer layer-eyes" id="layer-eye"></div>
+              <div class="custom-avatar-layer layer-mouth" id="layer-mou"></div>
+            </div>
+          </div>
           <div class="arrows right">
             <div class="arrow right" data-avatar-index="1"></div>
             <div class="arrow right" data-avatar-index="2"></div>
@@ -245,7 +246,7 @@
             </div>
             <button id="btn-copy-share-link"><span>Copy</span></button>
           </div>
-          <button id="btn-start-match" class="btn-flat" style="padding:14px 32px; font-size:18px; display:none;">Начать игру ▶</button>
+          <button id="btn-start-match" class="btn-flat" style="padding:14px 32px; font-size:18px;">Начать игру ▶</button>
         </div>
       </div>
 
