@@ -102,31 +102,34 @@
     #containerSidebar {
       display: flex !important;
       flex-direction: column !important;
-      width: 220px !important;
-      flex-shrink: 0 !important;
-      height: 600px !important;
-      max-height: 600px !important;
+      width: 340px !important;
+      flex: 0 0 340px !important;
+      align-self: stretch !important;
       min-height: 0 !important;
+      max-height: 100% !important;
+      overflow: hidden !important;
     }
     #containerChat {
       display: flex !important;
       flex-direction: column !important;
-      flex: 1 1 auto !important;
+      flex: 1 1 0 !important;
       min-height: 0 !important;
+      max-height: 100% !important;
       overflow: hidden !important;
-      height: 100% !important;
     }
     #boxMessages {
-      flex: 1 1 auto !important;
+      flex: 1 1 0 !important;
       min-height: 0 !important;
+      max-height: 100% !important;
       overflow-y: auto !important;
       overflow-x: hidden !important;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
+      display: block !important;
       padding: 8px;
       font-size: 13px;
       scroll-behavior: smooth;
+    }
+    #boxMessages .chat-row {
+      margin-bottom: 4px;
     }
     #boxChatInput {
       flex-shrink: 0 !important;
@@ -278,73 +281,56 @@
       box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     }
 
-    .board-with-toolbar {
+    .board-column {
       display: flex;
       flex-direction: column;
       align-items: stretch;
-      flex: 1;
-      min-width: 0;
+      flex: 1 1 auto;
+      min-width: 300px;
+      min-height: 0;
+      max-height: 100%;
     }
-    .draw-toolbar-strip {
-      display: none;
-      flex-direction: row;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 8px;
-      padding: 8px 10px;
-      background: #f3f3f3;
-      border: 1px solid #ccc;
-      border-top: none;
+    .board-column #containerCanvas,
+    .board-column #drawingToolbar {
+      width: 100%;
       max-width: 800px;
+      align-self: center;
       box-sizing: border-box;
     }
-    .draw-toolbar-strip[style*="flex"] {
-      display: flex !important;
-    }
-    .draw-toolbar-colors {
-      display: flex;
+    #drawingToolbar.containerToolbar {
+      display: none;
+      flex-wrap: nowrap;
       align-items: flex-start;
+      justify-content: space-between;
+      background: #f0f0f0;
+      border: 1px solid #c8c8c8;
+      border-top: none;
+      border-radius: 0 0 3px 3px;
+      padding: 6px 8px;
       gap: 6px;
     }
-    .draw-colors-row {
+    #drawingToolbar.containerToolbar.toolbar-visible {
       display: flex !important;
-      flex-direction: row !important;
-      gap: 2px;
     }
-    .draw-colors-row .containerColorColumn {
-      flex-direction: row !important;
-      flex-wrap: wrap;
-      max-width: 220px;
+    .containerToolbar1 {
+      flex: 1 1 auto;
+      justify-content: flex-start !important;
+      align-items: center !important;
     }
-    .draw-toolbar-sizes {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      padding: 0 6px;
-      border-left: 1px solid #ccc;
-      border-right: 1px solid #ccc;
+    .containerToolbar2 {
+      flex: 0 0 auto;
+      align-items: center !important;
+      gap: 0;
     }
-    .draw-toolbar-actions {
-      display: flex;
-      align-items: center;
-      gap: 4px;
+    .containerBrushSizes .brushSize.active,
+    .containerBrushSizes .brushSize.brushSizeActive {
+      background-color: #d8d8d8;
+      box-shadow: inset 0 0 0 2px #9664c8;
     }
-    .draw-toolbar-actions .tool,
-    .draw-toolbar-sizes .brushSize {
-      cursor: pointer;
-      border: 2px solid transparent;
-      border-radius: 4px;
-      padding: 2px;
+    .containerTools .tool[data-tool="erase"],
+    .containerTools .tool[data-tool="eraser"] {
+      display: none !important;
     }
-    .draw-toolbar-actions .tool.active,
-    .draw-toolbar-sizes .brushSize.active {
-      border-color: #337ab7;
-      background: #e8f4fc;
-    }
-    .size.size4 { width: 4px; height: 4px; }
-    .size.size10 { width: 10px; height: 10px; }
-    .size.size24 { width: 24px; height: 24px; }
-    .size.size36 { width: 36px; height: 36px; }
 
     #screenGame {
       max-height: 100vh;
@@ -353,62 +339,97 @@
     }
     #screenGame .gameHeader {
       flex-shrink: 0;
-      padding: 4px 0;
+      padding: 6px 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.12);
     }
     #screenGame .containerGame {
       display: flex !important;
       flex-direction: row !important;
       align-items: stretch !important;
-      max-height: calc(100vh - 72px) !important;
+      height: calc(100vh - 88px) !important;
+      max-height: calc(100vh - 88px) !important;
       min-height: 0 !important;
       overflow: hidden !important;
+      padding: 0 4px 8px;
+      box-sizing: border-box;
     }
     #containerPlayerlist {
       max-height: 100% !important;
       height: auto !important;
       overflow-y: auto !important;
     }
-    #containerSidebar {
-      height: 100% !important;
-      max-height: 100% !important;
-      min-height: 0 !important;
-    }
-    #containerChat {
-      max-height: 100% !important;
-    }
-    .board-with-toolbar {
-      max-height: 100%;
-      min-height: 0;
-    }
     #containerCanvas {
-      flex: 1 1 auto;
-      min-height: 0;
-      display: flex;
-      justify-content: center;
-      align-items: flex-start;
+      flex: 0 0 auto;
+      line-height: 0;
+      background: #fff;
+      border: 1px solid #c8c8c8;
+      border-radius: 3px 3px 0 0;
     }
     #canvasGame {
+      display: block;
       width: 100% !important;
       max-width: 800px !important;
       height: auto !important;
-      max-height: min(480px, calc(100vh - 200px)) !important;
+      max-height: min(520px, calc(100vh - 240px)) !important;
       aspect-ratio: 4 / 3;
+      vertical-align: top;
     }
-    .draw-toolbar-strip {
-      flex-shrink: 0;
-      max-width: 100% !important;
-      overflow-x: auto;
-      overflow-y: hidden;
-      padding: 4px 6px !important;
-      gap: 4px !important;
+    .game-word-stack {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      flex: 1 1 auto;
+      min-width: 0;
+      line-height: 1.15;
     }
-    .draw-toolbar-colors .colorPreview {
-      width: 28px !important;
-      height: 28px !important;
+    .game-word-stack .word-hint-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: #888;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
-    .draw-colors-row .colorItem {
-      width: 14px !important;
-      height: 14px !important;
+    #currentWordText {
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+    }
+    #currentWord.word-drawer-mode #currentWordText {
+      color: #2e7d32;
+    }
+    #currentWord.word-hint-mode #currentWordText {
+      color: #245195;
+      font-family: Consolas, "Courier New", monospace;
+      letter-spacing: 0.18em;
+    }
+    .room-link-header-bar {
+      border-radius: 3px;
+      box-shadow: inset 0 1px 2px rgba(255,255,255,0.8);
+    }
+    #containerChat {
+      border: 1px solid #c8c8c8;
+      border-radius: 3px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    }
+    #boxGuessedChat {
+      flex: 0 0 auto;
+      max-height: 120px;
+      min-height: 0;
+      overflow: hidden;
+    }
+    #containerGamePlayers .player {
+      background: #eee;
+      border-radius: 3px;
+      margin-bottom: 4px;
+      padding: 2px 4px;
+      border: 1px solid #ddd;
+    }
+    body.game-active #containerLogoBig {
+      margin: 8px 0 4px !important;
+    }
+    body.game-active #containerLogoBig .logoBig {
+      max-width: 320px !important;
     }
   </style>
 </head>
@@ -474,7 +495,10 @@
           <div id="timer">60</div>
         </div>
         <div id="round">Раунд 1 из 3</div>
-        <div id="currentWord" style="flex:1; text-align:center;">ОЖИДАНИЕ...</div>
+        <div id="currentWord" class="game-word-stack">
+          <span class="word-hint-label" id="wordHintLabel">Ожидание</span>
+          <span id="currentWordText">...</span>
+        </div>
 
         <div class="room-link-header-bar" id="roomInviteBox">
           <input type="text" readonly id="headerInviteLink">
@@ -488,7 +512,7 @@
           <div id="containerGamePlayers"></div>
         </div>
 
-        <div id="containerBoard" class="board-with-toolbar">
+        <div id="containerBoard" class="board-column">
           <div id="containerCanvas" style="position:relative;">
             <canvas id="canvasGame" width="800" height="600" style="background:#ffffff; cursor:crosshair;"></canvas>
             
@@ -500,10 +524,10 @@
             </div>
           </div>
 
-          <div class="containerToolbar draw-toolbar-strip" id="drawingToolbar" style="display:none;">
-            <div class="draw-toolbar-colors">
+          <div class="containerToolbar" id="drawingToolbar">
+            <div class="containerToolbar1">
               <div class="colorPreview" id="currentColorPreview" style="background:#000;"></div>
-              <div class="containerColorbox draw-colors-row">
+              <div class="containerColorbox">
                 <div class="containerColorColumn">
                   <div class="colorItem" data-color="#ffffff" style="background:#fff"></div>
                   <div class="colorItem" data-color="#c1c1c1" style="background:#c1c1c1"></div>
@@ -533,33 +557,31 @@
               </div>
             </div>
 
-            <div class="draw-toolbar-sizes" id="brushSizeRow">
-              <div class="brushSize" data-size="2" title="2px"><div class="sizeCenter"><div class="size size4"></div></div></div>
-              <div class="brushSize active" data-size="4" title="4px"><div class="sizeCenter"><div class="size size6"></div></div></div>
-              <div class="brushSize" data-size="8" title="8px"><div class="sizeCenter"><div class="size size10"></div></div></div>
-              <div class="brushSize" data-size="14" title="14px"><div class="sizeCenter"><div class="size size16"></div></div></div>
-              <div class="brushSize" data-size="22" title="22px"><div class="sizeCenter"><div class="size size24"></div></div></div>
-              <div class="brushSize" data-size="32" title="32px"><div class="sizeCenter"><div class="size size30"></div></div></div>
-              <div class="brushSize" data-size="44" title="44px"><div class="sizeCenter"><div class="size size36"></div></div></div>
-              <div class="brushSize" data-size="56" title="56px"><div class="sizeCenter"><div class="size size44"></div></div></div>
-            </div>
+            <div class="containerToolbar2">
+              <div class="containerTools">
+                <div class="tool toolActive" data-tool="pen" id="toolBtnPen" title="Кисть (B)"><img class="toolIcon" src="pen.gif" alt=""></div>
+                <div class="tool" data-tool="fill" id="toolBtnFill" title="Заливка (F)"><img class="toolIcon" src="filltool.gif" alt=""></div>
+                <div class="tool" data-tool="erase" id="toolBtnEraser" title="Ластик"><img class="toolIcon" src="rubber.gif" alt=""></div>
+              </div>
 
-            <div class="draw-toolbar-actions">
-              <div class="tool active" data-tool="pen" id="toolBtnPen" title="Кисть"><img class="toolIcon" src="pen.gif" alt=""></div>
-              <div class="tool" data-tool="eraser" id="toolBtnEraser" title="Ластик"><img class="toolIcon" src="rubber.gif" alt=""></div>
-              <div class="tool" data-tool="fill" id="toolBtnFill" title="Заливка"><img class="toolIcon" src="filltool.gif" alt=""></div>
-              <div class="tool" data-tool="fillall" id="toolBtnFillAll" title="Залить всё"><img class="toolIcon" src="fill_graphic.png" alt=""></div>
-              <div class="tool" data-tool="undo" id="toolBtnUndo" title="Отмена"><img class="toolIcon" src="undo.gif" alt=""></div>
-              <div class="tool" data-tool="clear" id="buttonClearCanvas" title="Очистить"><img class="toolIcon" src="eraser.gif" alt=""></div>
+              <div class="containerBrushSizes" id="brushSizeRow">
+                <div class="brushSize active brushSizeActive" data-size="3" title="3px"><div class="sizeCenter"><div class="size size6"></div></div></div>
+                <div class="brushSize" data-size="6" title="6px"><div class="sizeCenter"><div class="size size16"></div></div></div>
+                <div class="brushSize" data-size="14" title="14px"><div class="sizeCenter"><div class="size size30"></div></div></div>
+                <div class="brushSize" data-size="28" title="28px"><div class="sizeCenter"><div class="size size44"></div></div></div>
+              </div>
+
+              <div id="buttonUndo" title="Отмена (U)"></div>
+              <div class="containerClearCanvas">
+                <div id="buttonClearCanvas" title="Очистить (C)"><img class="toolIcon" src="eraser.gif" alt=""></div>
+              </div>
             </div>
           </div>
         </div>
 
         <div id="containerSidebar">
           <div id="containerChat">
-            <div id="boxMessages">
-              <div class="chat-row system">Добро пожаловать! Вводи догадку в чат ниже.</div>
-            </div>
+            <div id="boxMessages"></div>
             <div id="boxGuessedChat" class="hidden">
               <div class="guessed-chat-label">Чат угадавших (видят только вы и рисующий)</div>
               <div id="boxGuessedMessages"></div>

@@ -60,7 +60,7 @@ let roundTimerInterval = null;
 let canvas, ctx;
 let isDrawing = false;
 let currentColor = "#000000";
-let currentBrushSize = 4;
+let currentBrushSize = 3;
 let lastX = 0;
 let lastY = 0;
 let drawStrokeSeq = 0;
@@ -74,6 +74,8 @@ let lastSnapshotSentAt = 0;
 let lastPlayerListSignature = "";
 let pendingWordChoices = [];
 let currentTool = "pen";
+/** ПКМ: временное стирание без смены выбранного инструмента */
+let isRightErase = false;
 const undoStack = [];
 const UNDO_MAX = 40;
 let snapshotChunkBuffers = {};
@@ -237,70 +239,64 @@ function setupUIEvents() {
     });
   });
 
-  document.querySelectorAll(".brushSize").forEach(item => {
+  document.querySelectorAll(".containerBrushSizes .brushSize").forEach(item => {
     item.addEventListener("click", () => {
-      document.querySelectorAll(".brushSize").forEach(b => b.classList.remove("active"));
-      item.classList.add("active");
+      document.querySelectorAll(".containerBrushSizes .brushSize").forEach(b => {
+        b.classList.remove("active", "brushSizeActive");
+      });
+      item.classList.add("active", "brushSizeActive");
       currentBrushSize = parseInt(item.dataset.size, 10);
-      setActiveTool(currentTool === "eraser" ? "eraser" : "pen");
+      if (currentTool === "fill") setActiveTool("pen");
     });
   });
 
-  document.querySelectorAll(".draw-toolbar-actions .tool[data-tool]").forEach(btn => {
+  document.querySelectorAll(".containerTools .tool[data-tool]").forEach(btn => {
     btn.addEventListener("click", () => {
       const tool = btn.dataset.tool;
-      if (tool === "undo") {
-        undoCanvas();
-        return;
-      }
-      if (tool === "clear") {
-        if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
-          pushUndoSnapshot();
-          clearCanvasLocal();
-          broadcastPacket({ type: "CLEAR" });
-          if (useSocketRelay && gameSocket && gameSocket.connected) {
-            gameSocket.emit("clear");
-          }
-        }
-        return;
-      }
-      if (tool === "fillall") {
-        if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
-          fillEntireCanvas(currentColor);
-        }
-        setActiveTool("fillall");
-        return;
-      }
-      setActiveTool(tool);
-      if (tool === "eraser") {
-        currentColor = "#ffffff";
-      } else if (tool === "pen") {
+      if (tool === "erase" || tool === "eraser") return;
+      setActiveTool(tool === "eraser" ? "pen" : tool);
+      if (tool === "pen") {
         const preview = document.getElementById("currentColorPreview");
         currentColor = (preview && preview.style.background) ? preview.style.background : "#000000";
       }
     });
   });
 
+  const undoBtn = document.getElementById("buttonUndo");
+  if (undoBtn) undoBtn.addEventListener("click", () => undoCanvas());
+
+  const clearBtn = document.getElementById("buttonClearCanvas");
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
+        pushUndoSnapshot();
+        clearCanvasLocal();
+        broadcastPacket({ type: "CLEAR" });
+        if (useSocketRelay && gameSocket && gameSocket.connected) {
+          gameSocket.emit("clear");
+        }
+      }
+    });
+  }
+
   if (canvas) {
     canvas.addEventListener("mousedown", (e) => {
       if (e.button === 2) {
         e.preventDefault();
         if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
-          setActiveTool("eraser");
-          currentColor = "#ffffff";
+          isRightErase = true;
         }
       }
       startDrawing(e);
     });
     canvas.addEventListener("mousemove", draw);
-    window.addEventListener("mouseup", stopDrawing);
+    window.addEventListener("mouseup", (e) => {
+      if (e.button === 2) isRightErase = false;
+      stopDrawing();
+    });
 
     canvas.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
-        setActiveTool("eraser");
-        currentColor = "#ffffff";
-      }
     });
 
     canvas.addEventListener("touchstart", handleTouchStart, { passive: false });
@@ -324,6 +320,7 @@ function enterGameSession() {
     screenGame.style.display = "block";
     screenGame.classList.add("screen-game-enter");
   }
+  document.body.classList.add("game-active");
 
   gameState.players[myPlayerId] = {
     ...myState,
@@ -366,7 +363,6 @@ function startMqttConnection(brokerIndex = 0) {
     mqttClient.on("connect", () => {
       mqttConnected = true;
       console.log("MQTT connected:", brokerUrl);
-      addChatMessage("Сеть", "MQTT подключён — игроки в комнате синхронизируются.", "system");
 
       mqttClient.subscribe(roomTopic, { qos: 0 }, (err) => {
         if (!err) announcePresence();
@@ -413,25 +409,20 @@ function initGameSocket() {
       "join",
       { room: currentRoomCode, playerId: myPlayerId, player: me },
       () => {
-        addChatMessage("Сеть", "WebSocket-сервер подключён — рисование синхронное.", "system");
         announcePresence();
       }
     );
-    addChatMessage("Сеть", `Комната «${currentRoomCode}». Друзья — та же ссылка сверху!`, "system");
+    console.log("WebSocket connected, room:", currentRoomCode);
   });
 
   gameSocket.on("connect_error", () => {
     useSocketRelay = false;
-    addChatMessage(
-      "Сеть",
-      `WebSocket (${getGameServerUrl()}) не ответил. Игра через MQTT. Открой этот URL в браузере, подожди 30 сек и обнови игру.`,
-      "system"
-    );
+    console.warn("WebSocket connect_error, fallback to MQTT:", getGameServerUrl());
   });
 
   gameSocket.on("disconnect", () => {
     useSocketRelay = false;
-    addChatMessage("Сеть", "WebSocket отключён — рисование через снимки (MQTT).", "system");
+    console.warn("WebSocket disconnected, using MQTT snapshots for draw sync");
   });
 
   gameSocket.on("relay", (packet) => {
@@ -453,9 +444,9 @@ function initGameSocket() {
 
 function initNetworkConnection() {
   if (getGameServerUrl()) {
-    addChatMessage("Сеть", "Подключение WebSocket + MQTT…", "system");
+    console.log("Connecting WebSocket + MQTT…");
   } else {
-    addChatMessage("Сеть", "Подключение MQTT…", "system");
+    console.log("Connecting MQTT…");
   }
 
   startMqttConnection();
@@ -567,7 +558,7 @@ function handleIncomingPacket(packet) {
       }
       gameState.players[p.id] = merged;
 
-      if (isNew) {
+      if (isNew && packet.type === "PLAYER_JOIN") {
         addChatMessage("Сеть", `${p.name} присоединился к игре!`, "system");
       }
       if (isNew || (prev && (prev.score !== merged.score || prev.hasGuessed !== merged.hasGuessed))) {
@@ -782,9 +773,11 @@ function checkGameProgress() {
   const players = getPlayersList();
   if (players.length < MIN_PLAYERS_TO_START) {
     if (gameState.status === "WAITING") {
-      const wordDisplay = document.getElementById("currentWord");
-      if (wordDisplay) {
-        wordDisplay.textContent = `ЖДЁМ ИГРОКОВ (${players.length}/${MIN_PLAYERS_TO_START})…`;
+      const wordTextEl = document.getElementById("currentWordText");
+      const wordLabelEl = document.getElementById("wordHintLabel");
+      if (wordLabelEl) wordLabelEl.textContent = "Комната";
+      if (wordTextEl) {
+        wordTextEl.textContent = `Ждём игроков (${players.length}/${MIN_PLAYERS_TO_START})`;
       }
     }
     return;
@@ -1041,11 +1034,22 @@ function getCoords(e) {
 }
 
 function setActiveTool(tool) {
+  if (tool === "eraser" || tool === "erase") tool = "pen";
+  if (tool === "fillall") tool = "fill";
   currentTool = tool;
-  document.querySelectorAll(".draw-toolbar-actions .tool[data-tool]").forEach(el => {
-    if (el.dataset.tool === "undo" || el.dataset.tool === "clear") return;
-    el.classList.toggle("active", el.dataset.tool === tool);
+  document.querySelectorAll(".containerTools .tool[data-tool]").forEach(el => {
+    if (el.dataset.tool === "erase" || el.dataset.tool === "eraser") return;
+    el.classList.toggle("toolActive", el.dataset.tool === tool);
   });
+}
+
+function isFreehandDrawMode() {
+  if (isRightErase) return true;
+  return currentTool === "pen" || currentTool === "eraser";
+}
+
+function strokeColorForDraw() {
+  return isRightErase ? "#ffffff" : currentColor;
 }
 
 function pushUndoSnapshot() {
@@ -1148,13 +1152,13 @@ function floodFillAt(x, y, fillCss) {
 function startDrawing(e) {
   if (gameState.currentDrawerId !== myPlayerId || gameState.status !== "DRAWING") return;
 
-  if (currentTool === "fill") {
+  if (currentTool === "fill" && !isRightErase) {
     const coords = getCoords(e);
     floodFillAt(coords.x, coords.y, currentColor);
     return;
   }
 
-  if (currentTool !== "pen" && currentTool !== "eraser") return;
+  if (!isFreehandDrawMode()) return;
 
   isDrawing = true;
   pushUndoSnapshot();
@@ -1165,13 +1169,14 @@ function startDrawing(e) {
 
 function draw(e) {
   if (!isDrawing || gameState.currentDrawerId !== myPlayerId || gameState.status !== "DRAWING") return;
-  if (currentTool !== "pen" && currentTool !== "eraser") return;
+  if (!isFreehandDrawMode()) return;
   const coords = getCoords(e);
+  const color = strokeColorForDraw();
 
-  drawStrokeLocal(lastX, lastY, coords.x, coords.y, currentColor, currentBrushSize);
-  emitDrawSegment(lastX, lastY, coords.x, coords.y, currentColor, currentBrushSize);
+  drawStrokeLocal(lastX, lastY, coords.x, coords.y, color, currentBrushSize);
+  emitDrawSegment(lastX, lastY, coords.x, coords.y, color, currentBrushSize);
   if (!useSocketRelay) {
-    queueDrawBroadcast(lastX, lastY, coords.x, coords.y, currentColor, currentBrushSize);
+    queueDrawBroadcast(lastX, lastY, coords.x, coords.y, color, currentBrushSize);
   }
 
   lastX = coords.x;
@@ -1412,32 +1417,39 @@ function updateGameHeader() {
   const roundEl = document.getElementById("round");
   if (roundEl) roundEl.textContent = `Раунд ${gameState.round} из ${gameState.maxRounds}`;
 
-  const wordDisplay = document.getElementById("currentWord");
-  if (!wordDisplay) return;
+  const wordRoot = document.getElementById("currentWord");
+  const wordTextEl = document.getElementById("currentWordText");
+  const wordLabelEl = document.getElementById("wordHintLabel");
+  if (!wordRoot && !wordTextEl) return;
   const isDrawer = (gameState.currentDrawerId === myPlayerId);
+
+  const setBanner = (label, text, modeClass) => {
+    if (wordLabelEl) wordLabelEl.textContent = label;
+    if (wordTextEl) wordTextEl.textContent = text;
+    else if (wordRoot) wordRoot.textContent = text;
+    if (wordRoot) {
+      wordRoot.classList.remove("word-drawer-mode", "word-hint-mode");
+      if (modeClass) wordRoot.classList.add(modeClass);
+    }
+  };
 
   if (gameState.status === "DRAWING") {
     hideWordChoices();
     const len = gameState.currentWord ? gameState.currentWord.length : 0;
     if (isDrawer) {
-      wordDisplay.textContent = "СЛОВО: " + (gameState.currentWord || "").toUpperCase();
-      wordDisplay.classList.remove("word-hint-mode");
-      wordDisplay.classList.add("word-drawer-mode");
+      setBanner("Нарисуй", (gameState.currentWord || "").toUpperCase(), "word-drawer-mode");
     } else if (len > 0) {
-      wordDisplay.textContent = gameState.currentWord.split("").map(() => "_").join(" ");
-      wordDisplay.classList.remove("word-drawer-mode");
-      wordDisplay.classList.add("word-hint-mode");
+      setBanner("Угадай", gameState.currentWord.split("").map(() => "_").join(" "), "word-hint-mode");
     } else {
-      wordDisplay.textContent = "_ _ _ _";
-      wordDisplay.classList.add("word-hint-mode");
+      setBanner("Угадай", "_ _ _ _", "word-hint-mode");
     }
   } else if (gameState.status === "CHOOSING") {
-    wordDisplay.textContent = "ВЫБОР СЛОВА...";
+    setBanner("Раунд", "ВЫБОР СЛОВА…", null);
     if (isDrawer && pendingWordChoices.length) {
       showWordChoices(pendingWordChoices);
     }
   } else {
-    wordDisplay.textContent = "ОЖИДАНИЕ...";
+    setBanner("Ожидание", "…", null);
   }
 
   const toolbar = document.getElementById("drawingToolbar");
