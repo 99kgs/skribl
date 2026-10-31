@@ -231,7 +231,40 @@
       animation: modalPop 0.35s cubic-bezier(0.34, 1.4, 0.64, 1);
     }
     #containerGamePlayers .player {
+      animation: none;
+    }
+    #containerGamePlayers .player.player-enter-once {
       animation: playerCardIn 0.35s ease-out;
+    }
+    #boxGuessedChat {
+      flex-shrink: 0;
+      max-height: 140px;
+      border-top: 2px solid #5cb85c;
+      background: #f0faf3;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    #boxGuessedChat.hidden {
+      display: none !important;
+    }
+    .guessed-chat-label {
+      font-size: 11px;
+      font-weight: bold;
+      color: #3c763d;
+      padding: 4px 8px 0;
+    }
+    #boxGuessedMessages {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 4px 8px 6px;
+      font-size: 12px;
+    }
+    .chat-row.guessed {
+      color: #2d5016;
+      background: #e8f5e9;
+      border-radius: 3px;
     }
     .word-btn-opt {
       transition: transform 0.15s ease, background 0.15s ease;
@@ -392,7 +425,11 @@
         <div id="containerSidebar">
           <div id="containerChat">
             <div id="boxMessages">
-              <div class="chat-row system">Добро пожаловать в игру! Введите догадку в поле ниже.</div>
+              <div class="chat-row system">Добро пожаловать! Вводи догадку в чат ниже.</div>
+            </div>
+            <div id="boxGuessedChat" class="hidden">
+              <div class="guessed-chat-label">Чат угадавших (видят только вы и рисующий)</div>
+              <div id="boxGuessedMessages"></div>
             </div>
             <div id="boxChatInput">
               <form id="formChat" class="chat-input-row" action="javascript:void(0);">

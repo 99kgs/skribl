@@ -56,6 +56,11 @@ let drawStrokeSeq = 0;
 let pendingDrawPoints = [];
 let drawFlushScheduled = false;
 const processedPacketKeys = new Set();
+let remoteBatchBuffer = new Map();
+let nextRemoteBatchSeq = 0;
+let canvasSnapshotTimer = null;
+let lastSnapshotSentAt = 0;
+let lastPlayerListSignature = "";
 
 function packetDedupeKey(packet) {
   if (packet.nonce != null && packet.senderId) {
@@ -285,7 +290,8 @@ function enterGameSession() {
     ...myState,
     lastSeen: Date.now()
   };
-  updateUI();
+  updatePlayerList();
+  updateGameHeader();
 
   initNetworkConnection();
 }
@@ -374,7 +380,7 @@ function broadcastPacket(packet) {
   packet.timestamp = Date.now();
 
   // 1. MQTT WSS
-  const qos = (packet.type === "DRAW_BATCH" || packet.type === "DRAW_STROKE" || packet.type === "CLEAR") ? 1 : 0;
+  const qos = (packet.type === "DRAW_BATCH" || packet.type === "DRAW_STROKE" || packet.type === "CLEAR" || packet.type === "CANVAS_SNAPSHOT") ? 1 : 0;
   if (mqttClient && mqttClient.connected) {
     try {
       mqttClient.publish(roomTopic, JSON.stringify(packet), { qos });
@@ -387,10 +393,12 @@ function broadcastPacket(packet) {
     localBus.postMessage(packet);
   } catch(e) {}
 
-  // 3. LocalStorage
-  try {
-    localStorage.setItem("skribbl_ls_" + currentRoomCode, JSON.stringify(packet));
-  } catch (e) {}
+  // 3. LocalStorage (не для рисования — теряются пакеты между событиями)
+  if (packet.type !== "DRAW_BATCH" && packet.type !== "DRAW_STROKE" && packet.type !== "CANVAS_SNAPSHOT") {
+    try {
+      localStorage.setItem("skribbl_ls_" + currentRoomCode, JSON.stringify(packet));
+    } catch (e) {}
+  }
 }
 
 function handleIncomingPacket(packet) {
@@ -415,7 +423,8 @@ function handleIncomingPacket(packet) {
           syncStateToAll();
         }
       }
-      updateUI();
+      updatePlayerList();
+  updateGameHeader();
       break;
     }
 
@@ -431,16 +440,40 @@ function handleIncomingPacket(packet) {
           gameState.status = packet.state.status;
 
           Object.keys(packet.state.players).forEach(id => {
-            if (id !== myPlayerId) {
+            if (id === myPlayerId) {
+              const remoteMe = packet.state.players[id];
+              if (remoteMe && gameState.players[myPlayerId]) {
+                gameState.players[myPlayerId].score = remoteMe.score;
+                gameState.players[myPlayerId].hasGuessed = remoteMe.hasGuessed;
+              }
+            } else {
               gameState.players[id] = packet.state.players[id];
             }
           });
 
-          updateUI();
+          updatePlayerList();
+          updateGameHeader();
           if (packet.state.status === "DRAWING") {
             hideWordChoices();
-            pulseWordBanner();
           }
+        }
+      }
+      break;
+    }
+
+    case "CANVAS_SNAPSHOT": {
+      if (gameState.currentDrawerId === myPlayerId) break;
+      if (packet.drawerId !== gameState.currentDrawerId) break;
+      applyCanvasSnapshot(packet.data);
+      break;
+    }
+
+    case "SYNC_TIMER": {
+      if (!isRoomLeader()) {
+        const leaderId = getPlayersList().sort((a, b) => a.id.localeCompare(b.id))[0]?.id;
+        if (packet.senderId === leaderId) {
+          gameState.timeLeft = packet.timeLeft;
+          updateTimerDisplay();
         }
       }
       break;
@@ -452,16 +485,13 @@ function handleIncomingPacket(packet) {
     }
 
     case "DRAW_BATCH": {
-      const points = packet.points || [];
-      for (let i = 0; i < points.length; i++) {
-        const p = points[i];
-        applyRemoteStroke(p.prevX, p.prevY, p.currX, p.currY, p.color, p.size);
-      }
+      enqueueRemoteDrawBatch(packet);
       break;
     }
 
     case "CLEAR": {
       clearCanvasLocal();
+      resetRemoteDrawSync();
       break;
     }
 
@@ -489,7 +519,7 @@ function handleIncomingPacket(packet) {
     }
 
     case "CHAT_BROADCAST": {
-      addChatMessage(packet.senderName, packet.text, packet.messageType || "normal");
+      addChatMessage(packet.senderName, packet.text, packet.messageType || "normal", packet.audience);
       break;
     }
   }
@@ -512,7 +542,8 @@ function removeOfflinePlayers() {
   });
 
   if (changed) {
-    updateUI();
+    updatePlayerList();
+  updateGameHeader();
     if (isRoomLeader()) syncStateToAll();
   }
 }
@@ -541,6 +572,7 @@ function startNextTurn() {
 
   // Сброс статуса угадывания
   players.forEach(p => p.hasGuessed = false);
+  clearGuessedChatMessages();
 
   // Выбор следующего рисующего
   let currentIndex = players.findIndex(p => p.id === gameState.currentDrawerId);
@@ -558,8 +590,11 @@ function startNextTurn() {
   gameState.status = "CHOOSING";
   gameState.currentWord = "";
   gameState.timeLeft = 15;
+  drawStrokeSeq = 0;
+  stopCanvasSnapshotLoop();
 
   clearCanvasLocal();
+  resetRemoteDrawSync();
   broadcastPacket({ type: "CLEAR" });
 
   if (gameState.currentDrawerId === myPlayerId) {
@@ -586,8 +621,9 @@ function startNextTurn() {
       if (gameState.status === "CHOOSING") {
         startDrawingRound(choices[0]);
       }
+    } else {
+      broadcastTimerOnly();
     }
-    syncStateToAll();
   }, 1000);
 }
 
@@ -602,15 +638,17 @@ function startDrawingRound(word) {
   broadcastChatMessage("Игра", `Раунд начался! Слово из ${wLen} ${letterWord(wLen)} — рисуй и угадывай.`, "system");
   syncStateToAll();
   pulseWordBanner();
+  startCanvasSnapshotLoop();
 
   roundTimerInterval = setInterval(() => {
     gameState.timeLeft--;
 
     if (gameState.timeLeft <= 0) {
       clearInterval(roundTimerInterval);
+      stopCanvasSnapshotLoop();
       endTurnTimeUp();
     } else {
-      syncStateToAll();
+      broadcastTimerOnly();
     }
   }, 1000);
 }
@@ -636,11 +674,18 @@ function processIncomingGuess(playerId, rawText) {
   if (!player) return;
 
   if (playerId === gameState.currentDrawerId) {
+    if (gameState.status === "DRAWING" && gameState.currentWord) {
+      if (text === gameState.currentWord || levenshteinDistance(text, gameState.currentWord) <= 1) {
+        addChatMessage("Игра", "Рисующий не может писать загаданное слово в чат.", "system");
+        return;
+      }
+    }
     broadcastChatMessage(player.name, rawText, "normal");
     return;
   }
 
   if (player.hasGuessed) {
+    broadcastGuessedChatMessage(player.name, rawText);
     return;
   }
 
@@ -657,6 +702,7 @@ function processIncomingGuess(playerId, rawText) {
       }
 
       broadcastChatMessage("Игра", `${player.name} угадал слово (+${earned} очков)!`, "correct");
+      updateChatInputPlaceholder();
 
       const guessers = getPlayersList().filter(p => p.id !== gameState.currentDrawerId);
       const allGuessed = guessers.length > 0 && guessers.every(p => p.hasGuessed);
@@ -680,6 +726,7 @@ function processIncomingGuess(playerId, rawText) {
 }
 
 function endTurnTimeUp() {
+  stopCanvasSnapshotLoop();
   broadcastChatMessage("Игра", `Раунд окончен! Загаданное слово было: "${gameState.currentWord.toUpperCase()}".`, "system");
   setTimeout(() => {
     startNextTurn();
@@ -687,17 +734,30 @@ function endTurnTimeUp() {
 }
 
 function broadcastChatMessage(senderName, text, messageType) {
-  addChatMessage(senderName, text, messageType);
+  addChatMessage(senderName, text, messageType, "all");
   broadcastPacket({
     type: "CHAT_BROADCAST",
     senderName: senderName,
     text: text,
-    messageType: messageType
+    messageType: messageType,
+    audience: "all"
+  });
+}
+
+function broadcastGuessedChatMessage(senderName, text) {
+  addChatMessage(senderName, text, "guessed", "guessed");
+  broadcastPacket({
+    type: "CHAT_BROADCAST",
+    senderName: senderName,
+    text: text,
+    messageType: "guessed",
+    audience: "guessed"
   });
 }
 
 function syncStateToAll() {
-  updateUI();
+  updatePlayerList();
+  updateGameHeader();
   broadcastPacket({
     type: "SYNC_STATE",
     state: {
@@ -709,6 +769,14 @@ function syncStateToAll() {
       timeLeft: gameState.timeLeft,
       status: gameState.status
     }
+  });
+}
+
+function broadcastTimerOnly() {
+  updateTimerDisplay();
+  broadcastPacket({
+    type: "SYNC_TIMER",
+    timeLeft: gameState.timeLeft
   });
 }
 
@@ -757,11 +825,90 @@ function flushDrawBroadcast() {
   if (pendingDrawPoints.length === 0) return;
   const points = pendingDrawPoints;
   pendingDrawPoints = [];
-  broadcastPacket({
-    type: "DRAW_BATCH",
-    seq: drawStrokeSeq++,
-    points
-  });
+  const chunkSize = 20;
+  for (let i = 0; i < points.length; i += chunkSize) {
+    const chunk = points.slice(i, i + chunkSize);
+    broadcastPacket({
+      type: "DRAW_BATCH",
+      seq: drawStrokeSeq++,
+      points: chunk
+    });
+  }
+}
+
+function resetRemoteDrawSync() {
+  remoteBatchBuffer = new Map();
+  nextRemoteBatchSeq = 0;
+}
+
+function enqueueRemoteDrawBatch(packet) {
+  if (gameState.currentDrawerId === myPlayerId) return;
+  if (typeof packet.seq !== "number") {
+    const points = packet.points || [];
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      applyRemoteStroke(p.prevX, p.prevY, p.currX, p.currY, p.color, p.size);
+    }
+    return;
+  }
+  remoteBatchBuffer.set(packet.seq, packet);
+  drainRemoteDrawBatches();
+}
+
+function drainRemoteDrawBatches() {
+  while (remoteBatchBuffer.has(nextRemoteBatchSeq)) {
+    const batch = remoteBatchBuffer.get(nextRemoteBatchSeq);
+    remoteBatchBuffer.delete(nextRemoteBatchSeq);
+    const points = batch.points || [];
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      applyRemoteStroke(p.prevX, p.prevY, p.currX, p.currY, p.color, p.size);
+    }
+    nextRemoteBatchSeq++;
+  }
+  if (remoteBatchBuffer.size > 120) {
+    const keys = [...remoteBatchBuffer.keys()].sort((a, b) => a - b);
+    nextRemoteBatchSeq = keys[0];
+    drainRemoteDrawBatches();
+  }
+}
+
+function startCanvasSnapshotLoop() {
+  stopCanvasSnapshotLoop();
+  canvasSnapshotTimer = setInterval(() => {
+    if (gameState.currentDrawerId !== myPlayerId || gameState.status !== "DRAWING" || !canvas) return;
+    const now = Date.now();
+    if (now - lastSnapshotSentAt < 120) return;
+    lastSnapshotSentAt = now;
+    let data;
+    try {
+      data = canvas.toDataURL("image/jpeg", 0.42);
+    } catch (e) {
+      return;
+    }
+    broadcastPacket({
+      type: "CANVAS_SNAPSHOT",
+      drawerId: gameState.currentDrawerId,
+      data
+    });
+  }, 150);
+}
+
+function stopCanvasSnapshotLoop() {
+  if (canvasSnapshotTimer) {
+    clearInterval(canvasSnapshotTimer);
+    canvasSnapshotTimer = null;
+  }
+}
+
+function applyCanvasSnapshot(dataUrl) {
+  if (!ctx || !dataUrl || gameState.currentDrawerId === myPlayerId) return;
+  const img = new Image();
+  img.onload = () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  };
+  img.src = dataUrl;
 }
 
 function applyRemoteStroke(prevX, prevY, currX, currY, color, size) {
@@ -805,22 +952,60 @@ function drawStrokeLocal(x1, y1, x2, y2, color, size) {
 }
 
 function clearCanvasLocal() {
+  if (!ctx || !canvas) return;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (gameState.currentDrawerId !== myPlayerId) {
+    resetRemoteDrawSync();
+  }
 }
 
 // -------------------------------------------------------------
 // Рендеринг интерфейса (UI)
 // -------------------------------------------------------------
 
-function updateUI() {
+function getPlayerListSignature() {
+  return getPlayersList()
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(p => `${p.id}:${p.score || 0}:${p.hasGuessed ? 1 : 0}:${p.id === gameState.currentDrawerId ? 1 : 0}`)
+    .join("|");
+}
+
+function updatePlayerList() {
   const playerList = document.getElementById("containerGamePlayers");
   if (!playerList) return;
-  playerList.innerHTML = "";
+
+  const signature = getPlayerListSignature();
+  if (signature === lastPlayerListSignature) return;
+  lastPlayerListSignature = signature;
+
+  const existingIds = new Set();
+  playerList.querySelectorAll(".player[data-player-id]").forEach(el => existingIds.add(el.dataset.playerId));
 
   const list = getPlayersList();
+  const nextIds = new Set(list.map(p => p.id));
+
   list.forEach(p => {
-    const card = document.createElement("div");
-    card.className = "player";
+    let card = playerList.querySelector(`.player[data-player-id="${p.id}"]`);
+    const isNew = !card;
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "player";
+      card.dataset.playerId = p.id;
+      if (isNew) card.classList.add("player-enter-once");
+
+      const avHolder = document.createElement("div");
+      avHolder.className = "player-avatar-holder";
+      avHolder.innerHTML = '<div class="color"></div><div class="eyes"></div><div class="mouth"></div>';
+      card.appendChild(avHolder);
+
+      const info = document.createElement("div");
+      info.className = "player-info";
+      info.style.cssText = "margin-left: 8px; flex: 1; line-height: 1.2;";
+      info.innerHTML = '<div class="player-name" style="font-weight: bold; font-size: 13px;"></div><div class="player-score" style="font-size: 12px; color: #5cb85c; font-weight: bold;"></div>';
+      card.appendChild(info);
+      playerList.appendChild(card);
+    }
+
     card.style.cssText = `
       display: flex !important;
       align-items: center !important;
@@ -830,41 +1015,36 @@ function updateUI() {
       border-radius: 4px;
     `;
 
-    const avHolder = document.createElement("div");
-    avHolder.className = "player-avatar-holder";
+    setSpriteStyle(card.querySelector(".color"), (p.avatar ? p.avatar[0] : 0), 48);
+    setSpriteStyle(card.querySelector(".eyes"), (p.avatar ? p.avatar[1] : 0), 48);
+    setSpriteStyle(card.querySelector(".mouth"), (p.avatar ? p.avatar[2] : 0), 48);
 
-    const col = document.createElement("div"); col.className = "color";
-    const eye = document.createElement("div"); eye.className = "eyes";
-    const mou = document.createElement("div"); mou.className = "mouth";
-
-    setSpriteStyle(col, (p.avatar ? p.avatar[0] : 0), 48);
-    setSpriteStyle(eye, (p.avatar ? p.avatar[1] : 0), 48);
-    setSpriteStyle(mou, (p.avatar ? p.avatar[2] : 0), 48);
-
-    avHolder.appendChild(col);
-    avHolder.appendChild(eye);
-    avHolder.appendChild(mou);
-
-    const info = document.createElement("div");
-    info.style.cssText = "margin-left: 8px; flex: 1; line-height: 1.2;";
-    info.innerHTML = `
-      <div style="font-weight: bold; font-size: 13px;">${escapeHtml(p.name)} ${p.id === gameState.currentDrawerId ? "✏️" : ""}</div>
-      <div style="font-size: 12px; color: #5cb85c; font-weight: bold;">${p.score || 0} очков</div>
-    `;
-
-    card.appendChild(avHolder);
-    card.appendChild(info);
-    playerList.appendChild(card);
+    card.querySelector(".player-name").innerHTML = `${escapeHtml(p.name)} ${p.id === gameState.currentDrawerId ? "✏️" : ""}`;
+    card.querySelector(".player-score").textContent = `${p.score || 0} очков`;
   });
 
-  document.getElementById("timer").textContent = gameState.timeLeft;
+  existingIds.forEach(id => {
+    if (!nextIds.has(id)) {
+      const el = playerList.querySelector(`.player[data-player-id="${id}"]`);
+      if (el) el.remove();
+    }
+  });
+}
+
+function updateTimerDisplay() {
   const timerEl = document.getElementById("timer");
-  if (timerEl) {
-    timerEl.classList.toggle("timer-urgent", gameState.status === "DRAWING" && gameState.timeLeft <= 10);
-  }
-  document.getElementById("round").textContent = `Раунд ${gameState.round} из ${gameState.maxRounds}`;
+  if (!timerEl) return;
+  timerEl.textContent = gameState.timeLeft;
+  timerEl.classList.toggle("timer-urgent", gameState.status === "DRAWING" && gameState.timeLeft <= 10);
+}
+
+function updateGameHeader() {
+  updateTimerDisplay();
+  const roundEl = document.getElementById("round");
+  if (roundEl) roundEl.textContent = `Раунд ${gameState.round} из ${gameState.maxRounds}`;
 
   const wordDisplay = document.getElementById("currentWord");
+  if (!wordDisplay) return;
   const isDrawer = (gameState.currentDrawerId === myPlayerId);
 
   if (gameState.status === "DRAWING") {
@@ -875,10 +1055,7 @@ function updateUI() {
       wordDisplay.classList.remove("word-hint-mode");
       wordDisplay.classList.add("word-drawer-mode");
     } else if (len > 0) {
-      wordDisplay.textContent = gameState.currentWord
-        .split("")
-        .map(() => "_")
-        .join(" ");
+      wordDisplay.textContent = gameState.currentWord.split("").map(() => "_").join(" ");
       wordDisplay.classList.remove("word-drawer-mode");
       wordDisplay.classList.add("word-hint-mode");
     } else {
@@ -891,13 +1068,18 @@ function updateUI() {
     wordDisplay.textContent = "ОЖИДАНИЕ...";
   }
 
-  // Панель рисования видна ТОЛЬКО рисующему
   const toolbar = document.getElementById("drawingToolbar");
-  if (isDrawer && gameState.status === "DRAWING") {
-    toolbar.style.display = "flex";
-  } else {
-    toolbar.style.display = "none";
+  if (toolbar) {
+    toolbar.style.display = (isDrawer && gameState.status === "DRAWING") ? "flex" : "none";
   }
+
+  updateChatInputPlaceholder();
+  updateGuessedChatPanelVisibility();
+}
+
+function updateUI() {
+  updatePlayerList();
+  updateGameHeader();
 }
 
 function showWordChoices(words) {
@@ -971,22 +1153,69 @@ function pulseWordBanner() {
   }
 }
 
-function addChatMessage(sender, text, type = "normal") {
+function clearGuessedChatMessages() {
+  const box = document.getElementById("boxGuessedMessages");
+  if (box) box.innerHTML = "";
+}
+
+function canSeeGuessedChat() {
+  const me = gameState.players[myPlayerId];
+  if (!me) return false;
+  return me.hasGuessed || gameState.currentDrawerId === myPlayerId;
+}
+
+function updateGuessedChatPanelVisibility() {
+  const panel = document.getElementById("boxGuessedChat");
+  if (!panel) return;
+  const show = canSeeGuessedChat() && gameState.status === "DRAWING";
+  panel.classList.toggle("hidden", !show);
+}
+
+function updateChatInputPlaceholder() {
+  const input = document.getElementById("inputChat");
+  if (!input) return;
+  const me = gameState.players[myPlayerId];
+  if (!me) return;
+  if (gameState.currentDrawerId === myPlayerId) {
+    input.placeholder = "Сообщение в чат (не пиши загаданное слово)...";
+  } else if (me.hasGuessed) {
+    input.placeholder = "Чат для угадавших...";
+  } else {
+    input.placeholder = "Введите догадку...";
+  }
+}
+
+function addChatMessage(sender, text, type = "normal", audience = "all") {
+  if (audience === "guessed" || type === "guessed") {
+    if (!canSeeGuessedChat()) return;
+    const guessedBox = document.getElementById("boxGuessedMessages");
+    if (!guessedBox) return;
+    appendChatRow(guessedBox, sender, text, type);
+    return;
+  }
   const box = document.getElementById("boxMessages");
+  if (!box) return;
+  appendChatRow(box, sender, text, type);
+}
+
+function appendChatRow(box, sender, text, type) {
   const row = document.createElement("div");
   row.className = `chat-row ${type} chat-row-enter`;
 
   if (type === "system") {
     row.textContent = text;
-  } else if (type === "correct") {
+  } else if (type === "correct" || type === "close") {
     row.textContent = `${sender}: ${text}`;
-  } else if (type === "close") {
-    row.textContent = `${sender}: ${text}`;
+  } else if (type === "guessed") {
+    row.innerHTML = `<strong>${escapeHtml(sender)}:</strong> ${escapeHtml(text)}`;
   } else {
     row.innerHTML = `<strong>${escapeHtml(sender)}:</strong> ${escapeHtml(text)}`;
   }
 
   box.appendChild(row);
+  while (box.children.length > 120) {
+    box.removeChild(box.firstChild);
+  }
   box.scrollTop = box.scrollHeight;
 }
 
