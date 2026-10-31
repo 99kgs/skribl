@@ -104,9 +104,8 @@
       flex-direction: column !important;
       width: 340px !important;
       flex: 0 0 340px !important;
-      align-self: stretch !important;
+      align-self: flex-start !important;
       min-height: 0 !important;
-      max-height: 100% !important;
       overflow: hidden !important;
     }
     #containerChat {
@@ -345,8 +344,7 @@
     #screenGame .containerGame {
       display: flex !important;
       flex-direction: row !important;
-      align-items: stretch !important;
-      height: calc(100vh - 88px) !important;
+      align-items: flex-start !important;
       max-height: calc(100vh - 88px) !important;
       min-height: 0 !important;
       overflow: hidden !important;
@@ -354,8 +352,7 @@
       box-sizing: border-box;
     }
     #containerPlayerlist {
-      max-height: 100% !important;
-      height: auto !important;
+      align-self: flex-start !important;
       overflow-y: auto !important;
     }
     #containerCanvas {
@@ -605,6 +602,7 @@
     window.SKRIBBL_SERVER_URL = "https://skribl-z8j9.onrender.com";
   </script>
   <script src="words.js"></script>
+  <script src="game-sounds.js"></script>
   <script src="game-engine.js"></script>
 </body>
 </html>

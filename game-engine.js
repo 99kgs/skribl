@@ -27,6 +27,7 @@ let myAvatar = [
 ];
 
 const myPlayerId = "p_" + Math.random().toString(36).substring(2, 9);
+const PROFILE_STORAGE_KEY = "skribbl_profile_v1";
 const myState = {
   id: myPlayerId,
   name: "Игрок",
@@ -81,6 +82,7 @@ const UNDO_MAX = 40;
 let snapshotChunkBuffers = {};
 let snapshotFrameCounter = 0;
 let lastWordChoicesRequestAt = 0;
+let lastTickSoundSecond = -1;
 
 function packetDedupeKey(packet) {
   if (packet.nonce != null && packet.senderId) {
@@ -105,14 +107,70 @@ function bootApp() {
   if (canvas) ctx = canvas.getContext("2d");
 
   initAvatarSprites();
+  loadSavedProfile();
   setupUIEvents();
   parseRoomCode();
+  syncGamePanelHeights();
+  window.addEventListener("resize", syncGamePanelHeights);
 }
 
 if (document.readyState === "loading") {
   window.addEventListener("DOMContentLoaded", bootApp);
 } else {
   bootApp();
+}
+
+// -------------------------------------------------------------
+// Профиль (ник + скин)
+// -------------------------------------------------------------
+
+function loadSavedProfile() {
+  try {
+    const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data.name) {
+      const nameInput = document.getElementById("inputName");
+      if (nameInput) nameInput.value = String(data.name).slice(0, 20);
+      myState.name = nameInput ? nameInput.value.trim() : data.name;
+    }
+    if (Array.isArray(data.avatar) && data.avatar.length === 3) {
+      for (let i = 0; i < 3; i++) {
+        const max = ATLAS_ROWS[i] - 1;
+        const v = parseInt(data.avatar[i], 10);
+        if (!Number.isNaN(v)) myAvatar[i] = Math.max(0, Math.min(max, v));
+      }
+      updateLoginAvatar();
+    }
+  } catch (e) {}
+}
+
+function saveProfile() {
+  try {
+    const nameInput = document.getElementById("inputName");
+    const name = nameInput ? nameInput.value.trim().slice(0, 20) : myState.name;
+    localStorage.setItem(
+      PROFILE_STORAGE_KEY,
+      JSON.stringify({ name, avatar: [...myAvatar] })
+    );
+  } catch (e) {}
+}
+
+function syncGamePanelHeights() {
+  const board = document.getElementById("containerBoard");
+  const sidebar = document.getElementById("containerSidebar");
+  const playerList = document.getElementById("containerPlayerlist");
+  if (!board) return;
+  const h = board.offsetHeight;
+  if (h < 200) return;
+  const px = h + "px";
+  if (sidebar) {
+    sidebar.style.height = px;
+    sidebar.style.maxHeight = px;
+  }
+  if (playerList) {
+    playerList.style.maxHeight = px;
+  }
 }
 
 // -------------------------------------------------------------
@@ -146,6 +204,7 @@ function initAvatarSprites() {
       myAvatar[idx]--;
       if (myAvatar[idx] < 0) myAvatar[idx] = ATLAS_ROWS[idx] - 1;
       updateLoginAvatar();
+      saveProfile();
     });
   });
 
@@ -155,8 +214,26 @@ function initAvatarSprites() {
       myAvatar[idx]++;
       if (myAvatar[idx] >= ATLAS_ROWS[idx]) myAvatar[idx] = 0;
       updateLoginAvatar();
+      saveProfile();
     });
   });
+
+  const randomBtn = document.getElementById("buttonAvatarCustomizerRandomize");
+  if (randomBtn) {
+    randomBtn.addEventListener("click", () => {
+      myAvatar[0] = Math.floor(Math.random() * ATLAS_ROWS[0]);
+      myAvatar[1] = Math.floor(Math.random() * ATLAS_ROWS[1]);
+      myAvatar[2] = Math.floor(Math.random() * ATLAS_ROWS[2]);
+      updateLoginAvatar();
+      saveProfile();
+    });
+  }
+
+  const nameInput = document.getElementById("inputName");
+  if (nameInput) {
+    nameInput.addEventListener("change", saveProfile);
+    nameInput.addEventListener("blur", saveProfile);
+  }
 }
 
 // -------------------------------------------------------------
@@ -311,6 +388,7 @@ function enterGameSession() {
 
   myState.name = chosenName;
   myState.avatar = [...myAvatar];
+  saveProfile();
 
   const screenLogin = document.getElementById("screenLogin");
   if (screenLogin) screenLogin.style.display = "none";
@@ -328,6 +406,7 @@ function enterGameSession() {
   };
   updatePlayerList();
   updateGameHeader();
+  requestAnimationFrame(syncGamePanelHeights);
 
   initNetworkConnection();
   initGameSocket();
@@ -560,6 +639,7 @@ function handleIncomingPacket(packet) {
 
       if (isNew && packet.type === "PLAYER_JOIN") {
         addChatMessage("Сеть", `${p.name} присоединился к игре!`, "system");
+        if (p.id !== myPlayerId) playGameSound("join");
       }
       if (isNew || (prev && (prev.score !== merged.score || prev.hasGuessed !== merged.hasGuessed))) {
         lastPlayerListSignature = "";
@@ -574,7 +654,9 @@ function handleIncomingPacket(packet) {
 
     case "PLAYER_LEAVE": {
       if (packet.playerId && gameState.players[packet.playerId]) {
-        addChatMessage("Сеть", `${gameState.players[packet.playerId].name} вышел.`, "system");
+        const leavingName = gameState.players[packet.playerId].name;
+        addChatMessage("Сеть", `${leavingName} вышел.`, "system");
+        if (packet.playerId !== myPlayerId) playGameSound("leave");
         delete gameState.players[packet.playerId];
         lastPlayerListSignature = "";
         updatePlayerList();
@@ -803,7 +885,9 @@ function startNextTurn() {
 
   // Случайные слова
   const choices = [];
-  const wordsList = (typeof RUSSIAN_WORDS !== "undefined" && RUSSIAN_WORDS.length) ? RUSSIAN_WORDS : ["кот", "дом", "солнце", "дерево", "машина"];
+  const wordsList = (typeof getGameWordList === "function")
+    ? getGameWordList()
+    : ((typeof RUSSIAN_WORDS !== "undefined" && RUSSIAN_WORDS.length) ? RUSSIAN_WORDS : ["кот", "дом", "солнце", "дерево", "машина"]);
   while (choices.length < 3) {
     const randomWord = wordsList[Math.floor(Math.random() * wordsList.length)].toLowerCase();
     if (!choices.includes(randomWord)) choices.push(randomWord);
@@ -870,6 +954,8 @@ function startDrawingRound(word) {
   syncStateToAll();
   pulseWordBanner();
   startCanvasSnapshotLoop();
+  playGameSound("roundStart", 0.65);
+  lastTickSoundSecond = -1;
 
   roundTimerInterval = setInterval(() => {
     gameState.timeLeft--;
@@ -933,6 +1019,7 @@ function processIncomingGuess(playerId, rawText) {
       }
 
       broadcastChatMessage("Игра", `${player.name} угадал слово (+${earned} очков)!`, "correct");
+      playGameSound("guessed", 0.7);
       updateChatInputPlaceholder();
 
       broadcastPacket({
@@ -965,6 +1052,9 @@ function processIncomingGuess(playerId, rawText) {
 
 function endTurnTimeUp() {
   stopCanvasSnapshotLoop();
+  const guessers = getPlayersList().filter(p => p.id !== gameState.currentDrawerId);
+  const someoneGuessed = guessers.some(p => p.hasGuessed);
+  playGameSound(someoneGuessed ? "roundSuccess" : "roundFailure", 0.6);
   broadcastChatMessage("Игра", `Раунд окончен! Загаданное слово было: "${gameState.currentWord.toUpperCase()}".`, "system");
   setTimeout(() => {
     startNextTurn();
@@ -1410,6 +1500,16 @@ function updateTimerDisplay() {
   if (!timerEl) return;
   timerEl.textContent = gameState.timeLeft;
   timerEl.classList.toggle("timer-urgent", gameState.status === "DRAWING" && gameState.timeLeft <= 10);
+  if (
+    gameState.status === "DRAWING" &&
+    gameState.timeLeft > 0 &&
+    gameState.timeLeft <= 10 &&
+    gameState.timeLeft !== lastTickSoundSecond
+  ) {
+    lastTickSoundSecond = gameState.timeLeft;
+    playGameSound("tick", 0.35);
+  }
+  if (gameState.timeLeft > 10) lastTickSoundSecond = -1;
 }
 
 function updateGameHeader() {
@@ -1472,6 +1572,7 @@ function updateGameHeader() {
   if (gameState.currentDrawerId !== myPlayerId) {
     hideWordChoices();
   }
+  requestAnimationFrame(syncGamePanelHeights);
 }
 
 function updateUI() {
