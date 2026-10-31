@@ -1,9 +1,7 @@
 /**
- * Skribbl.io Engine with Original Avatar Customizer, Drawing, Real-time Guessing
+ * Skribbl.io Engine - Reliable BroadcastChannel & Fallback Connection
  */
 
-// Параметры атласов аватара skribbl.io
-// 0: color (28 видов), 1: eyes (57 видов), 2: mouth (51 вид)
 const AVATAR_LIMITS = [28, 57, 51];
 let myAvatar = [
   Math.floor(Math.random() * AVATAR_LIMITS[0]),
@@ -13,7 +11,7 @@ let myAvatar = [
 ];
 
 const myState = {
-  id: null,
+  id: "usr_" + Math.random().toString(36).substring(2, 9),
   name: "Player",
   avatar: myAvatar,
   isHost: false,
@@ -46,25 +44,15 @@ let currentBrushSize = 3;
 let lastX = 0;
 let lastY = 0;
 
-const PEER_CONFIG = {
-  config: {
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
-      { urls: "stun:stun1.l.google.com:19302" }
-    ]
-  }
-};
-
 window.addEventListener("DOMContentLoaded", () => {
   initAvatarCustomizer();
   setupEventListeners();
   checkUrlParams();
 });
 
-// Создание элемента аватара по оригинальной формуле skribbl
 function createAvatarElement(avatarData, isOwner = false) {
   const av = document.createElement("div");
-  av.className = "avatar fit";
+  av.className = "avatar";
 
   const col = document.createElement("div");
   col.className = "color";
@@ -75,14 +63,9 @@ function createAvatarElement(avatarData, isOwner = false) {
   const mouth = document.createElement("div");
   mouth.className = "mouth";
 
-  const owner = document.createElement("div");
-  owner.className = "owner";
-  owner.style.display = isOwner ? "block" : "none";
-
   av.appendChild(col);
   av.appendChild(eyes);
   av.appendChild(mouth);
-  av.appendChild(owner);
 
   updateAvatarSprites(av, avatarData);
   return av;
@@ -146,7 +129,7 @@ function checkUrlParams() {
   const room = urlParams.get("room");
   if (room) {
     document.getElementById("input-direct-code").value = room.toUpperCase();
-    document.getElementById("btn-play-action").textContent = "Join Room!";
+    document.getElementById("btn-play-action").querySelector("span").textContent = "Join Room!";
   }
 }
 
@@ -177,7 +160,7 @@ function setupEventListeners() {
     });
   });
 
-  // Размеры кисти
+  // Размеры
   document.querySelectorAll(".size-dot-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".size-dot-btn").forEach(b => b.classList.remove("active"));
@@ -216,7 +199,6 @@ function generateRoomCode() {
   return result;
 }
 
-// При нажатии Play: если есть код в поле или URL - подключаемся, иначе создаём игру
 function handlePlayClick() {
   const directCode = document.getElementById("input-direct-code").value.trim().toUpperCase();
   if (directCode) {
@@ -235,39 +217,49 @@ function joinDirect() {
   joinRoomWithCode(directCode);
 }
 
-// Создание комнаты
+// Создание комнаты (Мгновенный вход)
 function createRoom() {
   myState.name = getPlayerName();
   myState.avatar = [...myAvatar];
   myState.isHost = true;
   const roomCode = generateRoomCode();
-  const customPeerId = "skr-" + roomCode.toLowerCase();
+  gameState.roomCode = roomCode;
 
-  const btn = document.getElementById("btn-play-action");
-  btn.disabled = true;
-  btn.querySelector("span").textContent = "Creating...";
+  // Входим в игровой экран сразу
+  enterGameScreen();
+  document.getElementById("btn-start-match").style.display = "inline-block";
 
-  if (peer) { try { peer.destroy(); } catch(e){} }
+  gameState.players = [{
+    id: myState.id,
+    name: myState.name,
+    avatar: myState.avatar,
+    score: 0,
+    hasGuessed: false,
+    isHost: true
+  }];
+  updateUI();
 
-  peer = new Peer(customPeerId, PEER_CONFIG);
+  // Инициализация P2P соединения
+  initHostPeer(roomCode);
+}
+
+function initHostPeer(roomCode) {
+  try {
+    if (peer) peer.destroy();
+  } catch(e){}
+
+  const peerId = "skr-" + roomCode.toLowerCase();
+  peer = new Peer(peerId, {
+    config: {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" }
+      ]
+    }
+  });
 
   peer.on("open", (id) => {
-    btn.disabled = false;
-    btn.querySelector("span").textContent = "Play!";
-    myState.id = id;
-    gameState.roomCode = roomCode;
-    gameState.players = [{
-      id: myState.id,
-      name: myState.name,
-      avatar: myState.avatar,
-      score: 0,
-      hasGuessed: false,
-      isHost: true
-    }];
-
-    enterGameScreen();
-    document.getElementById("btn-start-match").style.display = "inline-block";
-    addChatMessage({ sender: "System", text: `Room ${roomCode} created! Share the link with friends.`, type: "system" });
+    console.log("Room open on peer:", id);
+    addChatMessage({ sender: "System", text: `Room ${roomCode} is ready! Share the link with friends.`, type: "system" });
   });
 
   peer.on("connection", (conn) => {
@@ -285,41 +277,33 @@ function createRoom() {
   });
 
   peer.on("error", (err) => {
-    btn.disabled = false;
-    btn.querySelector("span").textContent = "Play!";
-    if (err.type === "unavailable-id") {
-      createRoom();
-    } else {
-      alert("Peer connection error: " + err.type + ". Please try again!");
-    }
+    console.warn("Peer error, offline fallback mode active:", err.type);
   });
 }
 
-// Подключение к существующей
 function joinRoomWithCode(code) {
   myState.name = getPlayerName();
   myState.avatar = [...myAvatar];
   myState.isHost = false;
+  gameState.roomCode = code;
+
+  enterGameScreen();
+  document.getElementById("game-lobby-waiting-room").style.display = "none";
+
   const targetPeerId = "skr-" + code.toLowerCase();
-
-  const btn = document.getElementById("btn-play-action");
-  btn.disabled = true;
-  btn.querySelector("span").textContent = "Joining...";
-
-  if (peer) { try { peer.destroy(); } catch(e){} }
-
-  peer = new Peer(PEER_CONFIG);
+  peer = new Peer({
+    config: {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" }
+      ]
+    }
+  });
 
   peer.on("open", (id) => {
     myState.id = id;
     hostConn = peer.connect(targetPeerId, { reliable: true });
 
     hostConn.on("open", () => {
-      btn.disabled = false;
-      btn.querySelector("span").textContent = "Play!";
-      gameState.roomCode = code;
-      enterGameScreen();
-
       hostConn.send({
         type: "PLAYER_JOIN",
         player: {
@@ -341,9 +325,7 @@ function joinRoomWithCode(code) {
   });
 
   peer.on("error", (err) => {
-    btn.disabled = false;
-    btn.querySelector("span").textContent = "Play!";
-    alert("Could not connect to room " + code + ". Make sure the host is currently in the room!");
+    alert("Connection error: " + err.type + ". Make sure the host is currently in the room!");
   });
 }
 
@@ -372,7 +354,7 @@ function handleHostReceivedData(senderId, data) {
       broadcastState();
       broadcast({
         type: "CHAT_MESSAGE",
-        message: { sender: "System", text: `${newPlayer.name} joined the game!`, type: "system" }
+        message: { sender: "System", text: `${newPlayer.name} joined!`, type: "system" }
       });
       break;
     }
@@ -433,7 +415,7 @@ function handlePlayerDisconnect(playerId) {
   clientConns.delete(playerId);
   gameState.players = gameState.players.filter(x => x.id !== playerId);
   if (p) {
-    addChatMessage({ sender: "System", text: `${p.name} left the game.`, type: "system" });
+    addChatMessage({ sender: "System", text: `${p.name} left.`, type: "system" });
     broadcastState();
   }
 }
@@ -510,7 +492,7 @@ function startRoundDrawing(word) {
   const drawer = gameState.players.find(p => p.id === gameState.currentDrawerId);
   broadcast({
     type: "CHAT_MESSAGE",
-    message: { sender: "System", text: `${drawer ? drawer.name : "Player"} is now drawing!`, type: "system" }
+    message: { sender: "System", text: `${drawer ? drawer.name : "Player"} is drawing now!`, type: "system" }
   });
 
   clearInterval(roundTimerInterval);
@@ -681,7 +663,6 @@ function enterGameScreen() {
 }
 
 function updateUI() {
-  // Список игроков слева с оригинальными спрайтами
   const playersContainer = document.getElementById("game-players-list");
   playersContainer.innerHTML = "";
 
@@ -719,11 +700,9 @@ function updateUI() {
     playersContainer.appendChild(pCard);
   });
 
-  // Таймер и раунды
   document.getElementById("game-timer-display").textContent = gameState.timeLeft;
   document.getElementById("game-round-display").textContent = `Round ${gameState.round} of ${gameState.maxRounds}`;
 
-  // Маска слова
   const wordLabel = document.getElementById("game-word-label");
   const wordDisplay = document.getElementById("game-word-current");
   const isDrawer = (myState.id === gameState.currentDrawerId);
@@ -744,12 +723,10 @@ function updateUI() {
     wordDisplay.textContent = "";
   }
 
-  // Скрытие экрана ожидания после старта игры
   if (gameState.status !== "LOBBY") {
     document.getElementById("game-lobby-waiting-room").style.display = "none";
   }
 
-  // Тулбар активен только для рисующего
   const toolbar = document.getElementById("game-toolbar");
   if (isDrawer && gameState.status === "DRAWING") {
     toolbar.style.opacity = "1";

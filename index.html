@@ -8,13 +8,40 @@
   <link rel="stylesheet" type="text/css" href="css/style.css">
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
-    /* Отключение рекламы и подгонка элементов */
+    /* Гарантированные стили для кастомайзера скина */
+    .avatar-customizer .container {
+      width: 96px !important;
+      height: 96px !important;
+      position: relative;
+    }
+    .avatar {
+      position: relative;
+      width: 100% !important;
+      height: 100% !important;
+      display: block !important;
+    }
+    .avatar .color, .avatar .eyes, .avatar .mouth {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100% !important;
+      height: 100% !important;
+      background-size: 1000% 1000% !important;
+      background-repeat: no-repeat !important;
+    }
+    .avatar .color {
+      background-image: url("img/avatar/color_atlas.gif") !important;
+    }
+    .avatar .eyes {
+      background-image: url("img/avatar/eyes_atlas.gif") !important;
+    }
+    .avatar .mouth {
+      background-image: url("img/avatar/mouth_atlas.gif") !important;
+    }
+
     .ad-1, .ad-2, .ad-side, #preroll { display: none !important; }
-    
-    /* Скрываем ненужные блоки приватных комнат, оставляем одну прямую кнопку Play! */
     .button-create { display: none !important; }
-    
-    /* Инвайт блок */
+
     #custom-invite-bar {
       display: flex;
       gap: 6px;
@@ -40,7 +67,6 @@
     }
     .btn-flat:hover { background: #3c577a; }
 
-    /* Окно выбора слова */
     #game-word-picker-custom {
       display: flex;
       flex-direction: column;
@@ -85,7 +111,6 @@
     }
     .hidden { display: none !important; }
 
-    /* Тулбар палитры */
     .color-swatch {
       width: 22px;
       height: 22px;
@@ -125,7 +150,6 @@
 </head>
 <body translate="no">
 
-  <!-- ГЛАВНОЕ МЕНЮ (ОРИГИНАЛ SKRIBBL) -->
   <div id="home">
     <div class="logo-big">
       <a href="javascript:void(0)"><img src="img/logo.gif" alt="skribbl.io"></a>
@@ -140,30 +164,26 @@
           <input class="input-name" id="input-username" type="text" placeholder="Enter your name" maxlength="16" autocomplete="off">
         </div>
 
-        <!-- ОРИГИНАЛЬНЫЙ АВАТАР КАСТОМАЙЗЕР SKRIBBL.IO -->
+        <!-- АВАТАР КАСТОМАЙЗЕР -->
         <div class="avatar-customizer">
           <div class="arrows left">
             <div class="arrow left" data-avatar-index="1"></div>
             <div class="arrow left" data-avatar-index="2"></div>
             <div class="arrow left" data-avatar-index="0"></div>
           </div>
-          <div class="container" id="customizer-avatar-container">
-            <!-- Сюда скриптом монтируется оригинальный аватар со спрайтами -->
-          </div>
+          <div class="container" id="customizer-avatar-container"></div>
           <div class="arrows right">
             <div class="arrow right" data-avatar-index="1"></div>
             <div class="arrow right" data-avatar-index="2"></div>
             <div class="arrow right" data-avatar-index="0"></div>
           </div>
-          <div class="randomize" id="btn-randomize-avatar" title="Случайный аватар"></div>
+          <div class="randomize" id="btn-randomize-avatar" title="Randomize Avatar"></div>
         </div>
 
-        <!-- КНОПКА PLAY (БЕЗ ПРИВАТНЫХ КОМНАТ) -->
         <button class="button-play" id="btn-play-action">
           <span data-translate="text">Play!</span>
         </button>
 
-        <!-- Быстрый ввод кода, если заходишь к другу -->
         <div id="custom-invite-bar">
           <input type="text" id="input-direct-code" placeholder="Код комнаты друга..." autocomplete="off">
           <button class="btn-flat" id="btn-join-direct">Войти</button>
@@ -174,7 +194,7 @@
     </div>
   </div>
 
-  <!-- ИГРОВОЙ ЭКРАН (1 В 1 ОРИГИНАЛЬНЫЙ DOM SKRIBBL) -->
+  <!-- ИГРОВОЙ ЭКРАН -->
   <div id="game" style="display:none">
     <div id="game-wrapper">
       
@@ -199,19 +219,16 @@
         </div>
       </div>
 
-      <!-- Игроки слева со спрайтами скинов -->
       <div id="game-players">
         <div class="players-list" id="game-players-list"></div>
       </div>
 
       <div id="game-players-footer"></div>
 
-      <!-- Холст рисования -->
       <div id="game-canvas">
         <canvas id="main-draw-canvas" width="800" height="600"></canvas>
         <div class="overlay" id="canvas-overlay" style="display:none;"></div>
         
-        <!-- Выбор слова -->
         <div id="game-word-picker-custom" class="hidden">
           <div class="picker-card">
             <h2>Choose a word</h2>
@@ -219,10 +236,9 @@
           </div>
         </div>
 
-        <!-- Окно лобби / ожидания перед стартом игры -->
         <div class="room" id="game-lobby-waiting-room" style="display:flex; flex-direction:column; align-items:center; justify-content:center; position:absolute; inset:0; background:rgba(255,255,255,0.95); z-index:40;">
-          <h2 style="margin-bottom:12px; font-size:24px; color:#333;">Комната готова!</h2>
-          <p style="margin-bottom:20px; color:#666;">Поделитесь кодом комнаты с друзьями:</p>
+          <h2 style="margin-bottom:12px; font-size:24px; color:#333;">Комната создана!</h2>
+          <p style="margin-bottom:20px; color:#666;">Отправьте код или ссылку друзьям:</p>
           <div id="game-invite" style="margin-bottom:20px;">
             <div class="input-container">
               <input type="text" readonly id="share-link-input">
@@ -233,7 +249,6 @@
         </div>
       </div>
 
-      <!-- Тулбар с инструментами и цветами -->
       <div id="game-toolbar">
         <div class="toolbar-group-tools" style="display:flex; gap:6px; align-items:center;">
           <button id="btn-tool-pen" class="btn-flat" style="padding:6px 10px; font-size:12px;">✏️ Pen</button>
@@ -241,7 +256,6 @@
           <button id="btn-tool-clear" class="btn-flat" style="padding:6px 10px; font-size:12px; background:#e53935;">🗑 Clear</button>
         </div>
 
-        <!-- Размеры кисти -->
         <div class="sizes" style="display:flex; gap:4px; align-items:center; margin: 0 10px;">
           <div class="size-dot-btn active" data-size="3"><span style="width:4px; height:4px;"></span></div>
           <div class="size-dot-btn" data-size="6"><span style="width:8px; height:8px;"></span></div>
@@ -249,7 +263,6 @@
           <div class="size-dot-btn" data-size="24"><span style="width:20px; height:20px;"></span></div>
         </div>
 
-        <!-- Палитра оригинальных цветов skribbl -->
         <div class="colors" style="display:flex; gap:4px; align-items:center;">
           <div class="color-swatch active" data-color="#000000" style="background:#000000;"></div>
           <div class="color-swatch" data-color="#ffffff" style="background:#ffffff;"></div>
@@ -266,7 +279,6 @@
         </div>
       </div>
 
-      <!-- Чат -->
       <div id="game-chat">
         <div class="chat-content" id="skribbl-chat-messages" style="display:flex; flex-direction:column; gap:6px; padding:10px; overflow-y:auto; flex:1; font-size:13px;">
           <div style="color:#777; font-style:italic;">Welcome to skribbl!</div>
