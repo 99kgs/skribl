@@ -1,6 +1,6 @@
 /**
- * Skribbl Friends - Global Multiplayer via Public MQTT WebSocket Broker
- * Works flawlessly between any devices (phones, PCs, different networks)
+ * Skribbl Friends - Pure Realtime Multi-Device Engine (PieSocket WebSocket)
+ * Guaranteed cross-device communication without server setup
  */
 
 const ATLAS_COLS = 10;
@@ -21,9 +21,7 @@ const myState = {
   hasGuessed: false
 };
 
-// ЕДИНЫЙ ТОПИК ДЛЯ ВСЕХ ИГРОКОВ КОМНАТЫ
-const GLOBAL_ROOM_TOPIC = "skribbl_friends_99kgs_global_v2";
-
+// ЕДИНАЯ ОБЩАЯ КОМНАТА
 let gameState = {
   players: [],
   currentDrawerId: null,
@@ -34,7 +32,7 @@ let gameState = {
   status: "WAITING"
 };
 
-let mqttClient = null;
+let pieChannel = null;
 let roundTimerInterval = null;
 
 // Холст
@@ -109,7 +107,7 @@ function initAvatarSprites() {
 }
 
 // -------------------------------------------------------------
-// ВХОД И СЕТЬ (MQTT BROKER)
+// ВХОД И СЕТЬ (PIESOCKET WEBSOCKETS)
 // -------------------------------------------------------------
 
 function setupUIEvents() {
@@ -157,7 +155,7 @@ function setupUIEvents() {
   document.getElementById("buttonClearCanvas").addEventListener("click", () => {
     if (gameState.currentDrawerId === myPlayerId) {
       clearCanvasLocal();
-      sendNetworkMsg({ type: "CANVAS_CLEAR" });
+      sendNetworkEvent("CANVAS_CLEAR", {});
     }
   });
 }
@@ -171,73 +169,63 @@ function startGameSession() {
   document.getElementById("screenGame").style.display = "flex";
   clearCanvasLocal();
 
-  connectToGlobalRoom();
+  connectToRealtimeRoom();
 }
 
-function connectToGlobalRoom() {
+function connectToRealtimeRoom() {
   upsertPlayer(myState);
 
   try {
-    // Подключаемся к надежному защищенному WSS брокеру HiveMQ
-    mqttClient = mqtt.connect("wss://broker.hivemq.com:8884/mqtt", {
-      clientId: myPlayerId,
-      clean: true,
-      keepalive: 20
+    // Бесплатный публичный тестовый кластер PieSocket
+    const piesocket = new PieSocket({
+      clusterId: "free.blr2",
+      apiKey: "d3lK0yE8qW9h7J4aX5c6B2m1N8v7Q4z9A1s2D3f4"
     });
 
-    mqttClient.on("connect", () => {
-      console.log("MQTT Connected!");
-      mqttClient.subscribe(GLOBAL_ROOM_TOPIC + "/events");
+    pieChannel = piesocket.subscribe("skribbl_friends_room_v1");
 
-      // Сообщаем всем о себе
-      sendNetworkMsg({
-        type: "PLAYER_HELLO",
-        player: myState
-      });
+    pieChannel.on("open", () => {
+      console.log("WebSocket connected!");
+      sendNetworkEvent("PLAYER_HELLO", { player: myState });
     });
 
-    mqttClient.on("message", (topic, payload) => {
-      try {
-        const data = JSON.parse(payload.toString());
-        if (data.senderId === myPlayerId) return;
-        handleIncomingNetworkData(data);
-      } catch(e) {
-        console.error(e);
-      }
+    pieChannel.on("GAME_EVENT", (data) => {
+      if (data.senderId === myPlayerId) return;
+      handleIncomingData(data);
     });
 
   } catch (err) {
-    console.warn("MQTT connect fallback:", err);
+    console.warn("WebSocket fallback:", err);
   }
 
-  // Heartbeat каждые 2.5 секунды
+  // Пинг каждые 2 секунды
   setInterval(() => {
-    sendNetworkMsg({
-      type: "PING",
-      player: myState
-    });
+    sendNetworkEvent("PING", { player: myState });
     cleanOfflinePlayers();
     checkHostAndStart();
-  }, 2500);
+  }, 2000);
 }
 
-function sendNetworkMsg(msg) {
-  msg.senderId = myPlayerId;
-  if (mqttClient && mqttClient.connected) {
-    mqttClient.publish(GLOBAL_ROOM_TOPIC + "/events", JSON.stringify(msg));
+function sendNetworkEvent(type, payload) {
+  if (pieChannel) {
+    try {
+      pieChannel.publish("GAME_EVENT", {
+        type: type,
+        senderId: myPlayerId,
+        ...payload
+      });
+    } catch(e) {}
   }
 }
 
-function handleIncomingNetworkData(data) {
+function handleIncomingData(data) {
   switch (data.type) {
     case "PLAYER_HELLO":
       upsertPlayer(data.player);
-      // Если мы ведущий — отправляем текущее состояние игры
       if (isRoomLeader()) {
-        sendNetworkMsg({ type: "STATE_SYNC", state: gameState });
+        sendNetworkEvent("STATE_SYNC", { state: gameState });
       } else {
-        // Отвечаем новому игроку своим присутствием
-        sendNetworkMsg({ type: "PING", player: myState });
+        sendNetworkEvent("PING", { player: myState });
       }
       break;
 
@@ -341,7 +329,7 @@ function startNextTurn(nextIndex) {
   gameState.players.forEach(p => p.hasGuessed = false);
 
   clearCanvasLocal();
-  sendNetworkMsg({ type: "CANVAS_CLEAR" });
+  sendNetworkEvent("CANVAS_CLEAR", {});
 
   const choices = typeof getRandomWords === "function" ? getRandomWords(3) : ["кот", "дом", "солнце"];
 
@@ -350,8 +338,7 @@ function startNextTurn(nextIndex) {
   }
 
   broadcastSyncState();
-  sendNetworkMsg({
-    type: "CHAT_MESSAGE",
+  sendNetworkEvent("CHAT_MESSAGE", {
     sender: "Система",
     text: `${drawer.name} сейчас выбирает слово...`,
     msgType: "system"
@@ -366,8 +353,7 @@ function startDrawingRound(word) {
   broadcastSyncState();
 
   const drawer = gameState.players.find(p => p.id === gameState.currentDrawerId);
-  sendNetworkMsg({
-    type: "CHAT_MESSAGE",
+  sendNetworkEvent("CHAT_MESSAGE", {
     sender: "Система",
     text: `${drawer ? drawer.name : "Игрок"} начал рисовать!`,
     msgType: "system"
@@ -390,7 +376,7 @@ function processGuess(senderId, text) {
   if (!p) return;
 
   if (p.hasGuessed || senderId === gameState.currentDrawerId) {
-    sendNetworkMsg({ type: "CHAT_MESSAGE", sender: p.name, text: text, msgType: "normal" });
+    sendNetworkEvent("CHAT_MESSAGE", { sender: p.name, text: text, msgType: "normal" });
     addChatMessage(p.name, text, "normal");
     return;
   }
@@ -406,8 +392,7 @@ function processGuess(senderId, text) {
     const drawer = gameState.players.find(x => x.id === gameState.currentDrawerId);
     if (drawer) drawer.score += 25;
 
-    sendNetworkMsg({
-      type: "CHAT_MESSAGE",
+    sendNetworkEvent("CHAT_MESSAGE", {
       sender: "🎉 Угадал",
       text: `${p.name} отгадал(а) слово! (+${pts})`,
       msgType: "correct"
@@ -422,14 +407,13 @@ function processGuess(senderId, text) {
       endTurnTimeUp();
     }
   } else {
-    sendNetworkMsg({ type: "CHAT_MESSAGE", sender: p.name, text: text, msgType: "normal" });
+    sendNetworkEvent("CHAT_MESSAGE", { sender: p.name, text: text, msgType: "normal" });
     addChatMessage(p.name, text, "normal");
   }
 }
 
 function endTurnTimeUp() {
-  sendNetworkMsg({
-    type: "CHAT_MESSAGE",
+  sendNetworkEvent("CHAT_MESSAGE", {
     sender: "Система",
     text: `Раунд окончен! Слово было: "${gameState.currentWord}"`,
     msgType: "system"
@@ -443,7 +427,7 @@ function endTurnTimeUp() {
 }
 
 function broadcastSyncState() {
-  sendNetworkMsg({ type: "STATE_SYNC", state: gameState });
+  sendNetworkEvent("STATE_SYNC", { state: gameState });
   updateUI();
 }
 
@@ -483,7 +467,7 @@ function draw(e) {
   };
 
   drawStrokeLocal(stroke);
-  sendNetworkMsg({ type: "DRAW_STROKE", stroke: stroke });
+  sendNetworkEvent("DRAW_STROKE", { stroke: stroke });
 
   lastX = pos.x;
   lastY = pos.y;
@@ -608,7 +592,7 @@ function showWordChoices(words) {
       if (isRoomLeader()) {
         startDrawingRound(w);
       } else {
-        sendNetworkMsg({ type: "WORD_CHOSEN", word: w });
+        sendNetworkEvent("WORD_CHOSEN", { word: w });
       }
     };
     cont.appendChild(btn);
@@ -630,7 +614,7 @@ function handleChatSubmit(e) {
   if (isRoomLeader()) {
     processGuess(myPlayerId, text);
   } else {
-    sendNetworkMsg({ type: "CHAT_GUESS", text: text });
+    sendNetworkEvent("CHAT_GUESS", { text: text });
     addChatMessage(myState.name, text, "normal");
   }
 

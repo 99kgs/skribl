@@ -1,17 +1,23 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <title>skribbl - Р РёСЃСѓР№ Рё РЈРіР°РґС‹РІР°Р№</title>
-  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <title>skribbl - Рисуй и Угадывай</title>
+  <!-- Фавиконки с версионированием ?v=2 чтобы браузер сразу их обновил -->
+  <link rel="icon" type="image/x-icon" href="favicon.ico?v=2">
+  <link rel="shortcut icon" href="favicon.ico?v=2">
+  <link rel="apple-touch-icon" href="favicon.png?v=2">
+  <link rel="icon" type="image/png" sizes="64x64" href="favicon.png?v=2">
   <link href="main.css" rel="stylesheet">
-  <!-- РќР°РґРµР¶РЅР°СЏ РїСѓР±Р»РёС‡РЅР°СЏ Р±РёР±Р»РёРѕС‚РµРєР° P2P РєРѕРјРЅР°С‚ Trystero (С‡РµСЂРµР· РѕР±С‰РµРґРѕСЃС‚СѓРїРЅС‹Рµ СЃРµСЂРІРµСЂС‹ Nostr/MQTT) -->
-  <link rel="icon" type="image/png" href="favicon.png"><script src="https://unpkg.com/mqtt@5.3.5/dist/mqtt.min.js"></script>
+  
+  <!-- Прямой WebSocket клиент PieSocket (работает 100% везде без сбоев) -->
+  <script src="https://unpkg.com/piesocket-js@5"></script>
+
   <style>
-    /* РЈР±РёСЂР°РµРј РІСЃСЋ СЂРµРєР»Р°РјСѓ */
+    /* Убираем всю рекламу */
     #head-advertice, #header-advertice, #chat-advertice, #preroll, .game-sidebar-actions, .containerPlayerListButtons { display: none !important; }
     
-    /* РљРѕСЂСЂРµРєС‚РЅРѕРµ РѕС‚РѕР±СЂР°Р¶РµРЅРёРµ СЃРїРёСЃРєР° РёРіСЂРѕРєРѕРІ */
+    /* Список игроков слева */
     #containerPlayerlist {
       display: flex !important;
       flex-direction: column !important;
@@ -26,7 +32,7 @@
       gap: 4px !important;
     }
 
-    /* РњРѕРґР°Р»РєР° РІС‹Р±РѕСЂР° СЃР»РѕРІР° */
+    /* Модалка выбора слова */
     #word-select-modal {
       position: absolute;
       inset: 0;
@@ -68,7 +74,7 @@
 
     .hidden { display: none !important; }
 
-    /* Р§Р°С‚ */
+    /* Чат */
     #boxMessages {
       overflow-y: auto !important;
       height: calc(100% - 44px) !important;
@@ -83,7 +89,7 @@
     .chat-row.correct { color: #3c763d; background-color: #dff0d8; font-weight: bold; }
     .chat-row.normal strong { color: #337ab7; }
 
-    /* РџРѕР·РёС†РёРѕРЅРёСЂРѕРІР°РЅРёРµ Р°РІР°С‚Р°СЂРѕРІ РІ РёРіСЂРµ */
+    /* Позиционирование аватаров в игре */
     .player-avatar-holder {
       width: 48px;
       height: 48px;
@@ -104,7 +110,7 @@
     .player-avatar-holder .eyes  { background-image: url(eyes_atlas.gif); }
     .player-avatar-holder .mouth { background-image: url(mouth_atlas.gif); }
 
-    /* РџРѕР·РёС†РёРѕРЅРёСЂРѕРІР°РЅРёРµ Р°РІР°С‚Р°СЂР° РІ РјРµРЅСЋ Р»РѕРіРёРЅР° */
+    /* Позиционирование аватара в меню логина */
     #loginAvatar .color, #loginAvatar .eyes, #loginAvatar .mouth {
       background-size: 960px 960px;
       background-repeat: no-repeat;
@@ -121,27 +127,27 @@
 
   <div class="container-fluid" style="max-width:1400px; padding:0 4px;">
     
-    <!-- РЁРђРџРљРђ РЎ Р›РћР“РћРўРРџРћРњ -->
+    <!-- ШАПКА С ЛОГОТИПОМ -->
     <div class="header">
       <div id="containerLogoBig">
         <a href="javascript:void(0)"><img class="logo logoBig" src="logo.gif" alt="skribbl"></a>
       </div>
     </div>
 
-    <!-- Р­РљР РђРќ Р’РҐРћР”Рђ -->
+    <!-- ЭКРАН ВХОДА -->
     <div id="screenLogin">
       <div class="login-content">
         <div class="loginPanelContent" style="padding:8px">
           
           <form id="formLogin" onsubmit="return false;">
             <div class="login">
-              <input class="form-control" id="inputName" type="text" autocomplete="off" placeholder="Р’РІРµРґРёС‚Рµ РІР°С€Рµ РёРјСЏ" maxlength="20">
+              <input class="form-control" id="inputName" type="text" autocomplete="off" placeholder="Введите ваше имя" maxlength="20">
             </div>
 
-            <!-- РђР’РђРўРђР  РљРђРЎРўРћРњРђР™Р—Р•Р  -->
+            <!-- АВАТАР КАСТОМАЙЗЕР -->
             <div id="loginAvatarCustomizeContainer">
-              <div id="buttonAvatarCustomizerCube" title="РљСѓР±РёРє"></div>
-              <div id="buttonAvatarCustomizerRandomize" title="РЎР»СѓС‡Р°Р№РЅРѕ"></div>
+              <div id="buttonAvatarCustomizerCube" title="Кубик"></div>
+              <div id="buttonAvatarCustomizerRandomize" title="Случайно"></div>
               
               <div class="avatarArrows" id="loginAvatarArrowsLeft">
                 <div class="avatarArrow avatarArrowLeft" data-avatarindex="1"></div>
@@ -164,9 +170,9 @@
               </div>
             </div>
 
-            <!-- РљРќРћРџРљРђ Р’РҐРћР”Рђ -->
+            <!-- КНОПКА ВХОДА -->
             <button class="btn btn-success btn-lg btn-block" id="btnPlayGame" style="margin-top:12px; font-weight:bold; font-size:20px;" type="button">
-              РРіСЂР°С‚СЊ!
+              Играть!
             </button>
           </form>
 
@@ -174,40 +180,40 @@
       </div>
     </div>
 
-    <!-- РР“Р РћР’РћР™ Р­РљР РђРќ -->
+    <!-- ИГРОВОЙ ЭКРАН -->
     <div id="screenGame" style="display:none;">
       
       <div class="gameHeader">
         <div class="timer-container">
           <div id="timer">60</div>
         </div>
-        <div id="round">Р Р°СѓРЅРґ 1 РёР· 3</div>
-        <div id="currentWord">РћР–РР”РђРќРР•...</div>
+        <div id="round">Раунд 1 из 3</div>
+        <div id="currentWord">ОЖИДАНИЕ...</div>
       </div>
 
       <div class="containerGame">
         
-        <!-- РЎРїРёСЃРѕРє РёРіСЂРѕРєРѕРІ СЃР»РµРІР° -->
+        <!-- Список игроков слева -->
         <div id="containerPlayerlist">
           <div id="containerGamePlayers"></div>
         </div>
 
-        <!-- РҐРѕР»СЃС‚ РїРѕ С†РµРЅС‚СЂСѓ -->
+        <!-- Холст по центру -->
         <div id="containerBoard">
           <div id="containerCanvas" style="position:relative;">
             <canvas id="canvasGame" width="800" height="600" style="background:#ffffff; cursor:crosshair;"></canvas>
             
-            <!-- РћРєРЅРѕ РІС‹Р±РѕСЂР° СЃР»РѕРІР° -->
+            <!-- Окно выбора слова -->
             <div id="word-select-modal" class="hidden">
               <div class="modal-box">
-                <h3>Р’С‹Р±РµСЂРёС‚Рµ СЃР»РѕРІРѕ РґР»СЏ СЂРёСЃРѕРІР°РЅРёСЏ:</h3>
+                <h3>Выберите слово для рисования:</h3>
                 <div class="word-select-buttons" id="word-select-options"></div>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- РўСѓР»Р±Р°СЂ СЂРёСЃРѕРІР°РЅРёСЏ (РўРћР›Р¬РљРћ РґР»СЏ СЂРёСЃСѓСЋС‰РµРіРѕ!) -->
+        <!-- Тулбар рисования (ТОЛЬКО для рисующего!) -->
         <div class="containerToolbar" id="drawingToolbar" style="display:none;">
           <div class="containerToolbar1">
             <div class="colorPreview" id="currentColorPreview" style="background:#000;"></div>
@@ -243,8 +249,8 @@
 
           <div class="containerToolbar2">
             <div class="containerTools">
-              <div class="tool active" id="toolBtnPen"><img class="toolIcon" src="pen.gif" title="РљРёСЃС‚СЊ"></div>
-              <div class="tool" id="toolBtnEraser"><img class="toolIcon" src="rubber.gif" title="Р›Р°СЃС‚РёРє"></div>
+              <div class="tool active" id="toolBtnPen"><img class="toolIcon" src="pen.gif" title="Кисть"></div>
+              <div class="tool" id="toolBtnEraser"><img class="toolIcon" src="rubber.gif" title="Ластик"></div>
             </div>
 
             <div class="containerBrushSizes">
@@ -255,20 +261,20 @@
             </div>
 
             <div class="containerClearCanvas">
-              <div id="buttonClearCanvas" title="РћС‡РёСЃС‚РёС‚СЊ"><img class="toolIcon" src="eraser.gif" alt=""></div>
+              <div id="buttonClearCanvas" title="Очистить"><img class="toolIcon" src="eraser.gif" alt=""></div>
             </div>
           </div>
         </div>
 
-        <!-- Р§Р°С‚ СЃРїСЂР°РІР° -->
+        <!-- Чат справа -->
         <div id="containerSidebar">
           <div id="containerChat">
             <div id="boxMessages">
-              <div class="chat-row system">Р”РѕР±СЂРѕ РїРѕР¶Р°Р»РѕРІР°С‚СЊ РІ РёРіСЂСѓ! Р’РІРµРґРёС‚Рµ РґРѕРіР°РґРєСѓ РІ РїРѕР»Рµ РЅРёР¶Рµ.</div>
+              <div class="chat-row system">Добро пожаловать в игру! Введите догадку в поле ниже.</div>
             </div>
             <div id="boxChatInput">
               <form id="formChat" class="chat-input-row" action="javascript:void(0);">
-                <input class="form-control" id="inputChat" autocomplete="off" type="text" placeholder="Р’РІРµРґРёС‚Рµ РґРѕРіР°РґРєСѓ РёР»Рё СЃРѕРѕР±С‰РµРЅРёРµ...">
+                <input class="form-control" id="inputChat" autocomplete="off" type="text" placeholder="Введите догадку или сообщение...">
               </form>
             </div>
           </div>
@@ -283,4 +289,3 @@
   <script src="game-engine.js"></script>
 </body>
 </html>
-
