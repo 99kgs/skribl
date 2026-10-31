@@ -1,14 +1,21 @@
 /**
- * Skribbl Game Engine - Powered by Public WSS MQTT Broker & Local Multi-Bus
- * 100% Guaranteed cross-device, cross-browser serverless multiplayer.
+ * Skribbl Game Engine — WebSocket relay (recommended) + MQTT fallback
  */
 
-// Публичные бесплатные WSS MQTT брокеры с авто-переключением при сбоях
 const MQTT_BROKERS = [
   "wss://broker.emqx.io:8084/mqtt",
   "wss://broker.hivemq.com:8884/mqtt",
   "wss://test.mosquitto.org:8081"
 ];
+
+/** Подключи свой сервер из папки server/ (?server=https://твой-хост) */
+function getGameServerUrl() {
+  if (typeof window.SKRIBBL_SERVER_URL === "string" && window.SKRIBBL_SERVER_URL.trim()) {
+    return window.SKRIBBL_SERVER_URL.trim();
+  }
+  const q = new URLSearchParams(window.location.search).get("server");
+  return q ? q.trim() : "";
+}
 
 const ATLAS_COLS = 10;
 const ATLAS_ROWS = [18, 31, 24]; // color, eyes, mouth
@@ -29,6 +36,8 @@ const myState = {
 };
 
 let mqttClient = null;
+let gameSocket = null;
+let useSocketRelay = false;
 let currentRoomCode = "";
 let roomTopic = "";
 
@@ -61,6 +70,8 @@ let nextRemoteBatchSeq = 0;
 let canvasSnapshotTimer = null;
 let lastSnapshotSentAt = 0;
 let lastPlayerListSignature = "";
+let snapshotChunkBuffers = {};
+let snapshotFrameCounter = 0;
 
 function packetDedupeKey(packet) {
   if (packet.nonce != null && packet.senderId) {
@@ -255,6 +266,9 @@ function setupUIEvents() {
       if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
         clearCanvasLocal();
         broadcastPacket({ type: "CLEAR" });
+        if (useSocketRelay && gameSocket && gameSocket.connected) {
+          gameSocket.emit("clear");
+        }
       }
     });
   }
@@ -294,6 +308,48 @@ function enterGameSession() {
   updateGameHeader();
 
   initNetworkConnection();
+  initGameSocket();
+}
+
+function initGameSocket() {
+  const serverUrl = getGameServerUrl();
+  if (!serverUrl || typeof io === "undefined") return;
+
+  gameSocket = io(serverUrl, {
+    transports: ["websocket", "polling"],
+    reconnection: true
+  });
+
+  gameSocket.on("connect", () => {
+    useSocketRelay = true;
+    stopCanvasSnapshotLoop();
+    gameSocket.emit("join", { room: currentRoomCode, playerId: myPlayerId });
+    addChatMessage("Сеть", "WebSocket-сервер подключён — рисование синхронное.", "system");
+    broadcastPacket({
+      type: "PLAYER_JOIN",
+      player: gameState.players[myPlayerId]
+    });
+  });
+
+  gameSocket.on("disconnect", () => {
+    useSocketRelay = false;
+  });
+
+  gameSocket.on("relay", (packet) => {
+    if (!packet || packet.senderId === myPlayerId) return;
+    handleIncomingPacket(packet);
+  });
+
+  gameSocket.on("draw", (data) => {
+    if (!data || data.senderId === myPlayerId) return;
+    if (gameState.currentDrawerId === myPlayerId) return;
+    applyNormalizedDrawSegment(data);
+  });
+
+  gameSocket.on("clear", () => {
+    clearCanvasLocal();
+    resetRemoteDrawSync();
+  });
 }
 
 function initNetworkConnection(brokerIndex = 0) {
@@ -302,62 +358,70 @@ function initNetworkConnection(brokerIndex = 0) {
   }
 
   const brokerUrl = MQTT_BROKERS[brokerIndex];
-  addChatMessage("Сеть", `Подключение к облаку серверов...`, "system");
 
-  try {
-    if (window.mqtt) {
-      const clientId = "client_" + myPlayerId + "_" + Math.random().toString(16).substring(2, 8);
-      mqttClient = mqtt.connect(brokerUrl, {
-        clientId: clientId,
-        clean: true,
-        connectTimeout: 5000,
-        reconnectPeriod: 3000
-      });
-
-      mqttClient.on("connect", () => {
-        console.log("MQTT connected:", brokerUrl);
-        addChatMessage("Сеть", "Вы в сети! Отправьте ссылку сверху другу.", "system");
-
-        mqttClient.subscribe(roomTopic, { qos: 0 }, (err) => {
-          if (!err) {
-            broadcastPacket({
-              type: "PLAYER_JOIN",
-              player: gameState.players[myPlayerId]
-            });
-          }
-        });
-      });
-
-      mqttClient.on("message", (topic, message) => {
-        if (topic === roomTopic) {
-          try {
-            const data = JSON.parse(message.toString());
-            handleIncomingPacket(data);
-          } catch(e) {}
-        }
-      });
-
-      mqttClient.on("error", (err) => {
-        console.warn("MQTT Broker error, fallback to next broker:", err);
-      });
-    }
-  } catch (err) {
-    console.error("MQTT Init Error:", err);
+  if (getGameServerUrl()) {
+    addChatMessage("Сеть", "Подключение к игровому WebSocket…", "system");
+  } else {
+    addChatMessage("Сеть", `Подключение к облаку (MQTT, режим снимков)…`, "system");
   }
 
-  // Локальная шина для одной машины / вкладок
+  if (!getGameServerUrl()) {
+    try {
+      if (window.mqtt) {
+        const clientId = "client_" + myPlayerId + "_" + Math.random().toString(16).substring(2, 8);
+        mqttClient = mqtt.connect(brokerUrl, {
+          clientId: clientId,
+          clean: true,
+          connectTimeout: 5000,
+          reconnectPeriod: 3000
+        });
+
+        mqttClient.on("connect", () => {
+          console.log("MQTT connected:", brokerUrl);
+          addChatMessage("Сеть", "Вы в сети (MQTT). Для лучшего рисования подключите WebSocket-сервер.", "system");
+
+          mqttClient.subscribe(roomTopic, { qos: 0 }, (err) => {
+            if (!err) {
+              broadcastPacket({
+                type: "PLAYER_JOIN",
+                player: gameState.players[myPlayerId]
+              });
+            }
+          });
+        });
+
+        mqttClient.on("message", (topic, message) => {
+          if (topic === roomTopic) {
+            try {
+              const data = JSON.parse(message.toString());
+              handleIncomingPacket(data);
+            } catch (e) {}
+          }
+        });
+
+        mqttClient.on("error", (err) => {
+          console.warn("MQTT Broker error, fallback to next broker:", err);
+        });
+      }
+    } catch (err) {
+      console.error("MQTT Init Error:", err);
+    }
+  }
+
   try {
     const localBus = new BroadcastChannel("skribbl_bc_" + currentRoomCode);
     localBus.onmessage = (e) => handleIncomingPacket(e.data);
-  } catch(e) {}
+  } catch (e) {}
 
-  window.addEventListener("storage", (e) => {
-    if (e.key === "skribbl_ls_" + currentRoomCode && e.newValue) {
-      try {
-        handleIncomingPacket(JSON.parse(e.newValue));
-      } catch (err) {}
-    }
-  });
+  if (!getGameServerUrl()) {
+    window.addEventListener("storage", (e) => {
+      if (e.key === "skribbl_ls_" + currentRoomCode && e.newValue) {
+        try {
+          handleIncomingPacket(JSON.parse(e.newValue));
+        } catch (err) {}
+      }
+    });
+  }
 
   // Heartbeat каждые 2 секунды
   setInterval(() => {
@@ -379,26 +443,55 @@ function broadcastPacket(packet) {
   packet.nonce = Math.random();
   packet.timestamp = Date.now();
 
-  // 1. MQTT WSS
-  const qos = (packet.type === "DRAW_BATCH" || packet.type === "DRAW_STROKE" || packet.type === "CLEAR" || packet.type === "CANVAS_SNAPSHOT") ? 1 : 0;
-  if (mqttClient && mqttClient.connected) {
-    try {
-      mqttClient.publish(roomTopic, JSON.stringify(packet), { qos });
-    } catch(e) {}
+  if (useSocketRelay && gameSocket && gameSocket.connected) {
+    gameSocket.emit("relay", packet);
+  } else {
+    const qos = (packet.type === "DRAW_BATCH" || packet.type === "DRAW_STROKE" || packet.type === "CLEAR" || packet.type === "SNAP_PART") ? 1 : 0;
+    if (mqttClient && mqttClient.connected) {
+      try {
+        mqttClient.publish(roomTopic, JSON.stringify(packet), { qos });
+      } catch (e) {}
+    }
   }
 
-  // 2. BroadcastChannel
   try {
     const localBus = new BroadcastChannel("skribbl_bc_" + currentRoomCode);
     localBus.postMessage(packet);
-  } catch(e) {}
+  } catch (e) {}
 
-  // 3. LocalStorage (не для рисования — теряются пакеты между событиями)
-  if (packet.type !== "DRAW_BATCH" && packet.type !== "DRAW_STROKE" && packet.type !== "CANVAS_SNAPSHOT") {
+  if (!useSocketRelay && packet.type !== "DRAW_BATCH" && packet.type !== "DRAW_STROKE" && packet.type !== "SNAP_PART") {
     try {
       localStorage.setItem("skribbl_ls_" + currentRoomCode, JSON.stringify(packet));
     } catch (e) {}
   }
+}
+
+function emitDrawSegment(prevX, prevY, currX, currY, color, size) {
+  if (!canvas) return;
+  const payload = {
+    senderId: myPlayerId,
+    x1: prevX / canvas.width,
+    y1: prevY / canvas.height,
+    x2: currX / canvas.width,
+    y2: currY / canvas.height,
+    color,
+    size
+  };
+  if (useSocketRelay && gameSocket && gameSocket.connected) {
+    gameSocket.emit("draw", payload);
+  }
+}
+
+function applyNormalizedDrawSegment(data) {
+  if (!ctx || !canvas) return;
+  drawStrokeLocal(
+    data.x1 * canvas.width,
+    data.y1 * canvas.height,
+    data.x2 * canvas.width,
+    data.y2 * canvas.height,
+    data.color,
+    data.size
+  );
 }
 
 function handleIncomingPacket(packet) {
@@ -419,12 +512,12 @@ function handleIncomingPacket(packet) {
 
       if (isNew) {
         addChatMessage("Сеть", `${p.name} присоединился к игре!`, "system");
+        updatePlayerList();
+        updateGameHeader();
         if (isRoomLeader()) {
           syncStateToAll();
         }
       }
-      updatePlayerList();
-  updateGameHeader();
       break;
     }
 
@@ -463,8 +556,14 @@ function handleIncomingPacket(packet) {
 
     case "CANVAS_SNAPSHOT": {
       if (gameState.currentDrawerId === myPlayerId) break;
-      if (packet.drawerId !== gameState.currentDrawerId) break;
       applyCanvasSnapshot(packet.data);
+      break;
+    }
+
+    case "SNAP_PART": {
+      if (gameState.currentDrawerId === myPlayerId) break;
+      if (packet.senderId !== gameState.currentDrawerId) break;
+      reassembleSnapshotPart(packet);
       break;
     }
 
@@ -496,8 +595,15 @@ function handleIncomingPacket(packet) {
     }
 
     case "WORD_SELECT_PROMPT": {
-      if (myPlayerId === packet.drawerId) {
-        showWordChoices(packet.choices);
+      if (myPlayerId !== packet.drawerId) {
+        hideWordChoices();
+      }
+      break;
+    }
+
+    case "WORD_CHOICES": {
+      if (packet.targetId === myPlayerId) {
+        showWordChoices(packet.choices || []);
       } else {
         hideWordChoices();
       }
@@ -543,7 +649,7 @@ function removeOfflinePlayers() {
 
   if (changed) {
     updatePlayerList();
-  updateGameHeader();
+    updateGameHeader();
     if (isRoomLeader()) syncStateToAll();
   }
 }
@@ -601,10 +707,18 @@ function startNextTurn() {
     showWordChoices(choices);
   } else {
     hideWordChoices();
+  }
+
+  broadcastPacket({
+    type: "WORD_SELECT_PROMPT",
+    drawerId: gameState.currentDrawerId
+  });
+
+  if (gameState.currentDrawerId !== myPlayerId) {
     broadcastPacket({
-      type: "WORD_SELECT_PROMPT",
-      drawerId: gameState.currentDrawerId,
-      choices: choices
+      type: "WORD_CHOICES",
+      targetId: gameState.currentDrawerId,
+      choices
     });
   }
 
@@ -807,7 +921,10 @@ function draw(e) {
   const coords = getCoords(e);
 
   drawStrokeLocal(lastX, lastY, coords.x, coords.y, currentColor, currentBrushSize);
-  queueDrawBroadcast(lastX, lastY, coords.x, coords.y, currentColor, currentBrushSize);
+  emitDrawSegment(lastX, lastY, coords.x, coords.y, currentColor, currentBrushSize);
+  if (!useSocketRelay) {
+    queueDrawBroadcast(lastX, lastY, coords.x, coords.y, currentColor, currentBrushSize);
+  }
 
   lastX = coords.x;
   lastY = coords.y;
@@ -841,57 +958,62 @@ function resetRemoteDrawSync() {
   nextRemoteBatchSeq = 0;
 }
 
-function enqueueRemoteDrawBatch(packet) {
-  if (gameState.currentDrawerId === myPlayerId) return;
-  if (typeof packet.seq !== "number") {
-    const points = packet.points || [];
-    for (let i = 0; i < points.length; i++) {
-      const p = points[i];
-      applyRemoteStroke(p.prevX, p.prevY, p.currX, p.currY, p.color, p.size);
-    }
-    return;
-  }
-  remoteBatchBuffer.set(packet.seq, packet);
-  drainRemoteDrawBatches();
+function enqueueRemoteDrawBatch() {
+  /* Зрители на MQTT получают только SNAP_PART, не векторные штрихи */
 }
 
-function drainRemoteDrawBatches() {
-  while (remoteBatchBuffer.has(nextRemoteBatchSeq)) {
-    const batch = remoteBatchBuffer.get(nextRemoteBatchSeq);
-    remoteBatchBuffer.delete(nextRemoteBatchSeq);
-    const points = batch.points || [];
-    for (let i = 0; i < points.length; i++) {
-      const p = points[i];
-      applyRemoteStroke(p.prevX, p.prevY, p.currX, p.currY, p.color, p.size);
-    }
-    nextRemoteBatchSeq++;
+function reassembleSnapshotPart(packet) {
+  const frameId = packet.frameId;
+  if (!snapshotChunkBuffers[frameId]) {
+    snapshotChunkBuffers[frameId] = { total: packet.total, parts: [], count: 0 };
   }
-  if (remoteBatchBuffer.size > 120) {
-    const keys = [...remoteBatchBuffer.keys()].sort((a, b) => a - b);
-    nextRemoteBatchSeq = keys[0];
-    drainRemoteDrawBatches();
+  const buf = snapshotChunkBuffers[frameId];
+  if (buf.parts[packet.index]) return;
+  buf.parts[packet.index] = packet.data;
+  buf.count++;
+  if (buf.count < packet.total) return;
+
+  const full = buf.parts.join("");
+  delete snapshotChunkBuffers[frameId];
+  applyCanvasSnapshot(full);
+
+  const keys = Object.keys(snapshotChunkBuffers);
+  if (keys.length > 3) {
+    keys.slice(0, keys.length - 2).forEach(k => delete snapshotChunkBuffers[k]);
+  }
+}
+
+function broadcastSnapshotParts(dataUrl) {
+  const frameId = ++snapshotFrameCounter;
+  const chunkSize = 5000;
+  const total = Math.ceil(dataUrl.length / chunkSize);
+  for (let i = 0; i < total; i++) {
+    broadcastPacket({
+      type: "SNAP_PART",
+      frameId,
+      index: i,
+      total,
+      data: dataUrl.slice(i * chunkSize, (i + 1) * chunkSize)
+    });
   }
 }
 
 function startCanvasSnapshotLoop() {
   stopCanvasSnapshotLoop();
+  if (useSocketRelay) return;
   canvasSnapshotTimer = setInterval(() => {
     if (gameState.currentDrawerId !== myPlayerId || gameState.status !== "DRAWING" || !canvas) return;
     const now = Date.now();
-    if (now - lastSnapshotSentAt < 120) return;
+    if (now - lastSnapshotSentAt < 100) return;
     lastSnapshotSentAt = now;
     let data;
     try {
-      data = canvas.toDataURL("image/jpeg", 0.42);
+      data = canvas.toDataURL("image/jpeg", 0.36);
     } catch (e) {
       return;
     }
-    broadcastPacket({
-      type: "CANVAS_SNAPSHOT",
-      drawerId: gameState.currentDrawerId,
-      data
-    });
-  }, 150);
+    broadcastSnapshotParts(data);
+  }, 120);
 }
 
 function stopCanvasSnapshotLoop() {
@@ -986,12 +1108,10 @@ function updatePlayerList() {
 
   list.forEach(p => {
     let card = playerList.querySelector(`.player[data-player-id="${p.id}"]`);
-    const isNew = !card;
     if (!card) {
       card = document.createElement("div");
       card.className = "player";
       card.dataset.playerId = p.id;
-      if (isNew) card.classList.add("player-enter-once");
 
       const avHolder = document.createElement("div");
       avHolder.className = "player-avatar-holder";
@@ -1075,6 +1195,10 @@ function updateGameHeader() {
 
   updateChatInputPlaceholder();
   updateGuessedChatPanelVisibility();
+
+  if (gameState.currentDrawerId !== myPlayerId) {
+    hideWordChoices();
+  }
 }
 
 function updateUI() {
@@ -1083,6 +1207,10 @@ function updateUI() {
 }
 
 function showWordChoices(words) {
+  if (gameState.currentDrawerId !== myPlayerId) {
+    hideWordChoices();
+    return;
+  }
   const modal = document.getElementById("word-select-modal");
   const cont = document.getElementById("word-select-options");
   cont.innerHTML = "";
