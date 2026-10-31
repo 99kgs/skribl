@@ -1,6 +1,6 @@
 /**
- * Skribbl Friends - Real Multi-Device Engine via Trystero BitTorrent/WebRTC
- * Works across any phones, PCs and browsers globally without servers!
+ * Skribbl Friends - Global Multiplayer via Public MQTT WebSocket Broker
+ * Works flawlessly between any devices (phones, PCs, different networks)
  */
 
 const ATLAS_COLS = 10;
@@ -21,7 +21,9 @@ const myState = {
   hasGuessed: false
 };
 
-// ЕДИНАЯ ГЛОБАЛЬНАЯ КОМНАТА
+// ЕДИНЫЙ ТОПИК ДЛЯ ВСЕХ ИГРОКОВ КОМНАТЫ
+const GLOBAL_ROOM_TOPIC = "skribbl_friends_99kgs_global_v2";
+
 let gameState = {
   players: [],
   currentDrawerId: null,
@@ -32,8 +34,7 @@ let gameState = {
   status: "WAITING"
 };
 
-let trysteroRoom = null;
-let sendNetworkData = null;
+let mqttClient = null;
 let roundTimerInterval = null;
 
 // Холст
@@ -108,7 +109,7 @@ function initAvatarSprites() {
 }
 
 // -------------------------------------------------------------
-// ВХОД И СЕТЬ (TRYSTERO: РАБОТАЕТ ВЕЗДЕ)
+// ВХОД И СЕТЬ (MQTT BROKER)
 // -------------------------------------------------------------
 
 function setupUIEvents() {
@@ -174,71 +175,72 @@ function startGameSession() {
 }
 
 function connectToGlobalRoom() {
-  // Добавляем себя локально
   upsertPlayer(myState);
 
-  // Инициализация Trystero через BitTorrent WebRTC трекеры
   try {
-    const config = { appId: "skribbl-99kgs-main-v1" };
-    trysteroRoom = window.trystero.joinRoom(config, "public_game_room");
-
-    const [sendMsg, getMsg] = trysteroRoom.makeAction("game_sync");
-    sendNetworkData = sendMsg;
-
-    getMsg((data) => {
-      handleIncomingNetworkData(data);
+    // Подключаемся к надежному защищенному WSS брокеру HiveMQ
+    mqttClient = mqtt.connect("wss://broker.hivemq.com:8884/mqtt", {
+      clientId: myPlayerId,
+      clean: true,
+      keepalive: 20
     });
 
-    trysteroRoom.onPeerJoin((peerId) => {
-      console.log("Friend connected:", peerId);
-      // Сразу знакомимся с новым игроком
+    mqttClient.on("connect", () => {
+      console.log("MQTT Connected!");
+      mqttClient.subscribe(GLOBAL_ROOM_TOPIC + "/events");
+
+      // Сообщаем всем о себе
       sendNetworkMsg({
         type: "PLAYER_HELLO",
         player: myState
       });
-      if (isRoomLeader()) {
-        sendNetworkMsg({ type: "STATE_SYNC", state: gameState });
+    });
+
+    mqttClient.on("message", (topic, payload) => {
+      try {
+        const data = JSON.parse(payload.toString());
+        if (data.senderId === myPlayerId) return;
+        handleIncomingNetworkData(data);
+      } catch(e) {
+        console.error(e);
       }
     });
 
-    trysteroRoom.onPeerLeave((peerId) => {
-      console.log("Friend left:", peerId);
-    });
-
   } catch (err) {
-    console.warn("Trystero error, using local fallback:", err);
+    console.warn("MQTT connect fallback:", err);
   }
 
-  // Периодический пинг
+  // Heartbeat каждые 2.5 секунды
   setInterval(() => {
     sendNetworkMsg({
       type: "PING",
       player: myState
     });
+    cleanOfflinePlayers();
     checkHostAndStart();
   }, 2500);
-
-  // Знакомимся со всеми
-  sendNetworkMsg({
-    type: "PLAYER_HELLO",
-    player: myState
-  });
 }
 
 function sendNetworkMsg(msg) {
   msg.senderId = myPlayerId;
-  if (sendNetworkData) {
-    try {
-      sendNetworkData(msg);
-    } catch(e) {}
+  if (mqttClient && mqttClient.connected) {
+    mqttClient.publish(GLOBAL_ROOM_TOPIC + "/events", JSON.stringify(msg));
   }
 }
 
 function handleIncomingNetworkData(data) {
-  if (data.senderId === myPlayerId) return;
-
   switch (data.type) {
     case "PLAYER_HELLO":
+      upsertPlayer(data.player);
+      // Если мы ведущий — отправляем текущее состояние игры
+      if (isRoomLeader()) {
+        sendNetworkMsg({ type: "STATE_SYNC", state: gameState });
+      } else {
+        // Отвечаем новому игроку своим присутствием
+        sendNetworkMsg({ type: "PING", player: myState });
+      }
+      break;
+
     case "PING":
       upsertPlayer(data.player);
       break;
@@ -297,6 +299,15 @@ function upsertPlayer(p) {
   updateUI();
 }
 
+function cleanOfflinePlayers() {
+  const now = Date.now();
+  const countBefore = gameState.players.length;
+  gameState.players = gameState.players.filter(p => (now - p.lastSeen < 8000) || p.id === myPlayerId);
+  if (gameState.players.length !== countBefore) {
+    updateUI();
+  }
+}
+
 function isRoomLeader() {
   if (gameState.players.length === 0) return true;
   const sorted = [...gameState.players].sort((a, b) => a.id.localeCompare(b.id));
@@ -310,7 +321,6 @@ function isRoomLeader() {
 function checkHostAndStart() {
   if (!isRoomLeader()) return;
 
-  // Автостарт раунда
   if (gameState.status === "WAITING" && gameState.players.length >= 1) {
     startNextTurn(0);
   }
@@ -530,7 +540,6 @@ function updateUI() {
       border-radius: 4px;
     `;
 
-    // Скин игрока 48x48
     const avHolder = document.createElement("div");
     avHolder.className = "player-avatar-holder";
 
@@ -558,7 +567,6 @@ function updateUI() {
     playerList.appendChild(card);
   });
 
-  // Верхняя панель
   document.getElementById("timer").textContent = gameState.timeLeft;
   document.getElementById("round").textContent = `Раунд ${gameState.round} из ${gameState.maxRounds}`;
 
@@ -577,7 +585,7 @@ function updateUI() {
     wordDisplay.textContent = "ОЖИДАНИЕ...";
   }
 
-  // ТУЛБАР: ПОКАЗЫВАЕТСЯ ТОЛЬКО ТОМУ, КТО РИСУЕТ!
+  // Тулбар ТОЛЬКО для рисующего
   const toolbar = document.getElementById("drawingToolbar");
   if (isDrawer && gameState.status === "DRAWING") {
     toolbar.style.display = "flex";
