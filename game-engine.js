@@ -52,6 +52,28 @@ let currentColor = "#000000";
 let currentBrushSize = 3;
 let lastX = 0;
 let lastY = 0;
+let drawStrokeSeq = 0;
+let pendingDrawPoints = [];
+let drawFlushScheduled = false;
+const processedPacketKeys = new Set();
+
+function packetDedupeKey(packet) {
+  if (packet.nonce != null && packet.senderId) {
+    return `${packet.senderId}:${packet.nonce}`;
+  }
+  return `${packet.senderId}:${packet.type}:${packet.timestamp || 0}`;
+}
+
+function shouldProcessPacket(packet) {
+  const key = packetDedupeKey(packet);
+  if (processedPacketKeys.has(key)) return false;
+  processedPacketKeys.add(key);
+  if (processedPacketKeys.size > 800) {
+    const drop = [...processedPacketKeys].slice(0, 400);
+    drop.forEach(k => processedPacketKeys.delete(k));
+  }
+  return true;
+}
 
 function bootApp() {
   canvas = document.getElementById("canvasGame");
@@ -254,7 +276,10 @@ function enterGameSession() {
   if (screenLogin) screenLogin.style.display = "none";
 
   const screenGame = document.getElementById("screenGame");
-  if (screenGame) screenGame.style.display = "block";
+  if (screenGame) {
+    screenGame.style.display = "block";
+    screenGame.classList.add("screen-game-enter");
+  }
 
   gameState.players[myPlayerId] = {
     ...myState,
@@ -349,9 +374,10 @@ function broadcastPacket(packet) {
   packet.timestamp = Date.now();
 
   // 1. MQTT WSS
+  const qos = (packet.type === "DRAW_BATCH" || packet.type === "DRAW_STROKE" || packet.type === "CLEAR") ? 1 : 0;
   if (mqttClient && mqttClient.connected) {
     try {
-      mqttClient.publish(roomTopic, JSON.stringify(packet), { qos: 0 });
+      mqttClient.publish(roomTopic, JSON.stringify(packet), { qos });
     } catch(e) {}
   }
 
@@ -369,6 +395,7 @@ function broadcastPacket(packet) {
 
 function handleIncomingPacket(packet) {
   if (!packet || packet.senderId === myPlayerId) return;
+  if (!shouldProcessPacket(packet)) return;
 
   switch (packet.type) {
     case "PLAYER_JOIN":
@@ -410,13 +437,26 @@ function handleIncomingPacket(packet) {
           });
 
           updateUI();
+          if (packet.state.status === "DRAWING") {
+            hideWordChoices();
+            pulseWordBanner();
+          }
         }
       }
       break;
     }
 
     case "DRAW_STROKE": {
-      drawStrokeLocal(packet.prevX, packet.prevY, packet.currX, packet.currY, packet.color, packet.size);
+      applyRemoteStroke(packet.prevX, packet.prevY, packet.currX, packet.currY, packet.color, packet.size);
+      break;
+    }
+
+    case "DRAW_BATCH": {
+      const points = packet.points || [];
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        applyRemoteStroke(p.prevX, p.prevY, p.currX, p.currY, p.color, p.size);
+      }
       break;
     }
 
@@ -553,12 +593,15 @@ function startNextTurn() {
 
 function startDrawingRound(word) {
   clearInterval(roundTimerInterval);
+  hideWordChoices();
   gameState.status = "DRAWING";
   gameState.currentWord = word.toLowerCase();
   gameState.timeLeft = 60;
 
-  broadcastChatMessage("Игра", `Раунд начался! Время рисовать и угадывать.`, "system");
+  const wLen = gameState.currentWord.length;
+  broadcastChatMessage("Игра", `Раунд начался! Слово из ${wLen} ${letterWord(wLen)} — рисуй и угадывай.`, "system");
   syncStateToAll();
+  pulseWordBanner();
 
   roundTimerInterval = setInterval(() => {
     gameState.timeLeft--;
@@ -696,22 +739,40 @@ function draw(e) {
   const coords = getCoords(e);
 
   drawStrokeLocal(lastX, lastY, coords.x, coords.y, currentColor, currentBrushSize);
-
-  broadcastPacket({
-    type: "DRAW_STROKE",
-    prevX: lastX,
-    prevY: lastY,
-    currX: coords.x,
-    currY: coords.y,
-    color: currentColor,
-    size: currentBrushSize
-  });
+  queueDrawBroadcast(lastX, lastY, coords.x, coords.y, currentColor, currentBrushSize);
 
   lastX = coords.x;
   lastY = coords.y;
 }
 
+function queueDrawBroadcast(prevX, prevY, currX, currY, color, size) {
+  pendingDrawPoints.push({ prevX, prevY, currX, currY, color, size });
+  if (drawFlushScheduled) return;
+  drawFlushScheduled = true;
+  requestAnimationFrame(flushDrawBroadcast);
+}
+
+function flushDrawBroadcast() {
+  drawFlushScheduled = false;
+  if (pendingDrawPoints.length === 0) return;
+  const points = pendingDrawPoints;
+  pendingDrawPoints = [];
+  broadcastPacket({
+    type: "DRAW_BATCH",
+    seq: drawStrokeSeq++,
+    points
+  });
+}
+
+function applyRemoteStroke(prevX, prevY, currX, currY, color, size) {
+  if (!ctx) return;
+  drawStrokeLocal(prevX, prevY, currX, currY, color, size);
+}
+
 function stopDrawing() {
+  if (isDrawing && pendingDrawPoints.length) {
+    flushDrawBroadcast();
+  }
   isDrawing = false;
 }
 
@@ -797,16 +858,32 @@ function updateUI() {
   });
 
   document.getElementById("timer").textContent = gameState.timeLeft;
+  const timerEl = document.getElementById("timer");
+  if (timerEl) {
+    timerEl.classList.toggle("timer-urgent", gameState.status === "DRAWING" && gameState.timeLeft <= 10);
+  }
   document.getElementById("round").textContent = `Раунд ${gameState.round} из ${gameState.maxRounds}`;
 
   const wordDisplay = document.getElementById("currentWord");
   const isDrawer = (gameState.currentDrawerId === myPlayerId);
 
   if (gameState.status === "DRAWING") {
+    hideWordChoices();
+    const len = gameState.currentWord ? gameState.currentWord.length : 0;
     if (isDrawer) {
       wordDisplay.textContent = "СЛОВО: " + (gameState.currentWord || "").toUpperCase();
+      wordDisplay.classList.remove("word-hint-mode");
+      wordDisplay.classList.add("word-drawer-mode");
+    } else if (len > 0) {
+      wordDisplay.textContent = gameState.currentWord
+        .split("")
+        .map(() => "_")
+        .join(" ");
+      wordDisplay.classList.remove("word-drawer-mode");
+      wordDisplay.classList.add("word-hint-mode");
     } else {
-      wordDisplay.textContent = "_ ".repeat(gameState.currentWord ? gameState.currentWord.length : 4).trim();
+      wordDisplay.textContent = "_ _ _ _";
+      wordDisplay.classList.add("word-hint-mode");
     }
   } else if (gameState.status === "CHOOSING") {
     wordDisplay.textContent = "ВЫБОР СЛОВА...";
@@ -871,10 +948,33 @@ function handleChatSubmit(e) {
   input.value = "";
 }
 
+function letterWord(n) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 14) return "букв";
+  if (mod10 === 1) return "буква";
+  if (mod10 >= 2 && mod10 <= 4) return "буквы";
+  return "букв";
+}
+
+function pulseWordBanner() {
+  const wordDisplay = document.getElementById("currentWord");
+  const board = document.getElementById("containerBoard");
+  if (!wordDisplay) return;
+  wordDisplay.classList.remove("word-pulse");
+  void wordDisplay.offsetWidth;
+  wordDisplay.classList.add("word-pulse");
+  if (board) {
+    board.classList.remove("round-live");
+    void board.offsetWidth;
+    board.classList.add("round-live");
+  }
+}
+
 function addChatMessage(sender, text, type = "normal") {
   const box = document.getElementById("boxMessages");
   const row = document.createElement("div");
-  row.className = `chat-row ${type}`;
+  row.className = `chat-row ${type} chat-row-enter`;
 
   if (type === "system") {
     row.textContent = text;

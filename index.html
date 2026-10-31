@@ -99,14 +99,39 @@
 
     .hidden { display: none !important; }
 
+    #containerSidebar {
+      display: flex !important;
+      flex-direction: column !important;
+      width: 220px !important;
+      flex-shrink: 0 !important;
+      height: 600px !important;
+      max-height: 600px !important;
+      min-height: 0 !important;
+    }
+    #containerChat {
+      display: flex !important;
+      flex-direction: column !important;
+      flex: 1 1 auto !important;
+      min-height: 0 !important;
+      overflow: hidden !important;
+      height: 100% !important;
+    }
     #boxMessages {
+      flex: 1 1 auto !important;
+      min-height: 0 !important;
       overflow-y: auto !important;
-      height: calc(100% - 44px) !important;
+      overflow-x: hidden !important;
       display: flex;
       flex-direction: column;
       gap: 4px;
       padding: 8px;
       font-size: 13px;
+      scroll-behavior: smooth;
+    }
+    #boxChatInput {
+      flex-shrink: 0 !important;
+      border-top: 1px solid #ddd;
+      background: #f8f9fa;
     }
     .chat-row { padding: 3px 6px; border-radius: 3px; word-break: break-word; }
     .chat-row.system { color: #888; font-style: italic; }
@@ -144,6 +169,83 @@
     #loginAvatar .color { background-image: url(color_atlas.gif); }
     #loginAvatar .eyes  { background-image: url(eyes_atlas.gif); }
     #loginAvatar .mouth { background-image: url(mouth_atlas.gif); }
+
+    @keyframes chatRowIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes wordPulse {
+      0% { transform: scale(1); }
+      35% { transform: scale(1.04); }
+      100% { transform: scale(1); }
+    }
+    @keyframes timerUrgent {
+      0%, 100% { color: #d9534f; transform: scale(1); }
+      50% { color: #ff2a2a; transform: scale(1.08); }
+    }
+    @keyframes screenGameIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes canvasReveal {
+      from { box-shadow: 0 0 0 rgba(92, 184, 92, 0); }
+      to { box-shadow: 0 0 24px rgba(92, 184, 92, 0.35); }
+    }
+    @keyframes modalPop {
+      from { opacity: 0; transform: scale(0.92); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    @keyframes playerCardIn {
+      from { opacity: 0; transform: translateX(-8px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .chat-row-enter {
+      animation: chatRowIn 0.28s ease-out;
+    }
+    #currentWord.word-pulse {
+      animation: wordPulse 0.55s ease-out;
+    }
+    #currentWord.word-drawer-mode {
+      color: #2e7d32;
+      letter-spacing: 0.06em;
+    }
+    #currentWord.word-hint-mode {
+      color: #245195;
+      letter-spacing: 0.18em;
+      font-family: Consolas, "Courier New", monospace;
+    }
+    #timer.timer-urgent {
+      animation: timerUrgent 0.9s ease-in-out infinite;
+    }
+    #screenGame.screen-game-enter {
+      animation: screenGameIn 0.45s ease-out;
+    }
+    #canvasGame {
+      transition: box-shadow 0.3s ease;
+    }
+    #containerBoard.round-live #canvasGame {
+      animation: canvasReveal 0.6s ease-out;
+    }
+    #word-select-modal:not(.hidden) .modal-box {
+      animation: modalPop 0.35s cubic-bezier(0.34, 1.4, 0.64, 1);
+    }
+    #containerGamePlayers .player {
+      animation: playerCardIn 0.35s ease-out;
+    }
+    .word-btn-opt {
+      transition: transform 0.15s ease, background 0.15s ease;
+    }
+    .word-btn-opt:active {
+      transform: scale(0.96);
+    }
+    #btnPlayGame {
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    #btnPlayGame:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
   </style>
 </head>
 <body oncontextmenu="return false;" style="background-color:#245195; margin:0; padding:0;">
