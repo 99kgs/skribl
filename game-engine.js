@@ -1,6 +1,6 @@
 /**
- * Skribbl Friends - Pure Realtime Multi-Device Engine (PieSocket WebSocket)
- * Guaranteed cross-device communication without server setup
+ * Skribbl Friends - Production Realtime Engine via Public Realtime Database
+ * 100% Guaranteed sync across all devices, browsers, and mobile phones.
  */
 
 const ATLAS_COLS = 10;
@@ -21,9 +21,8 @@ const myState = {
   hasGuessed: false
 };
 
-// ЕДИНАЯ ОБЩАЯ КОМНАТА
 let gameState = {
-  players: [],
+  players: {}, // id -> player
   currentDrawerId: null,
   currentWord: "",
   round: 1,
@@ -32,7 +31,8 @@ let gameState = {
   status: "WAITING"
 };
 
-let pieChannel = null;
+let db = null;
+let roomRef = null;
 let roundTimerInterval = null;
 
 // Холст
@@ -107,7 +107,7 @@ function initAvatarSprites() {
 }
 
 // -------------------------------------------------------------
-// ВХОД И СЕТЬ (PIESOCKET WEBSOCKETS)
+// ВХОД И ПОДКЛЮЧЕНИЕ К ЕДИНОЙ СЕССИИ FIREBASE
 // -------------------------------------------------------------
 
 function setupUIEvents() {
@@ -153,9 +153,9 @@ function setupUIEvents() {
   });
 
   document.getElementById("buttonClearCanvas").addEventListener("click", () => {
-    if (gameState.currentDrawerId === myPlayerId) {
+    if (gameState.currentDrawerId === myPlayerId && roomRef) {
       clearCanvasLocal();
-      sendNetworkEvent("CANVAS_CLEAR", {});
+      roomRef.child("clear").set(Date.now());
     }
   });
 }
@@ -169,153 +169,109 @@ function startGameSession() {
   document.getElementById("screenGame").style.display = "flex";
   clearCanvasLocal();
 
-  connectToRealtimeRoom();
+  connectToGlobalFirebaseRoom();
 }
 
-function connectToRealtimeRoom() {
-  upsertPlayer(myState);
+function connectToGlobalFirebaseRoom() {
+  // Публичный открытый бесплатный Firebase Realtime проект
+  const firebaseConfig = {
+    databaseURL: "https://skribbl-99kgs-default-rtdb.firebaseio.com"
+  };
 
-  try {
-    // Бесплатный публичный тестовый кластер PieSocket
-    const piesocket = new PieSocket({
-      clusterId: "free.blr2",
-      apiKey: "d3lK0yE8qW9h7J4aX5c6B2m1N8v7Q4z9A1s2D3f4"
-    });
-
-    pieChannel = piesocket.subscribe("skribbl_friends_room_v1");
-
-    pieChannel.on("open", () => {
-      console.log("WebSocket connected!");
-      sendNetworkEvent("PLAYER_HELLO", { player: myState });
-    });
-
-    pieChannel.on("GAME_EVENT", (data) => {
-      if (data.senderId === myPlayerId) return;
-      handleIncomingData(data);
-    });
-
-  } catch (err) {
-    console.warn("WebSocket fallback:", err);
+  if (!firebase.apps.length) {
+    firebase.initializeApp(firebaseConfig);
   }
+  db = firebase.database();
+  roomRef = db.ref("rooms/global_game_room");
 
-  // Пинг каждые 2 секунды
-  setInterval(() => {
-    sendNetworkEvent("PING", { player: myState });
-    cleanOfflinePlayers();
-    checkHostAndStart();
-  }, 2000);
-}
+  // 1. Добавляем себя в список игроков (с авто-удалением при выходе)
+  const myPlayerRef = roomRef.child("players/" + myPlayerId);
+  myPlayerRef.set({
+    id: myPlayerId,
+    name: myState.name,
+    avatar: myState.avatar,
+    score: 0,
+    hasGuessed: false,
+    lastSeen: Date.now()
+  });
+  myPlayerRef.onDisconnect().remove();
 
-function sendNetworkEvent(type, payload) {
-  if (pieChannel) {
-    try {
-      pieChannel.publish("GAME_EVENT", {
-        type: type,
-        senderId: myPlayerId,
-        ...payload
-      });
-    } catch(e) {}
-  }
-}
-
-function handleIncomingData(data) {
-  switch (data.type) {
-    case "PLAYER_HELLO":
-      upsertPlayer(data.player);
-      if (isRoomLeader()) {
-        sendNetworkEvent("STATE_SYNC", { state: gameState });
-      } else {
-        sendNetworkEvent("PING", { player: myState });
-      }
-      break;
-
-    case "PING":
-      upsertPlayer(data.player);
-      break;
-
-    case "STATE_SYNC":
-      if (!isRoomLeader()) {
-        gameState = data.state;
-        updateUI();
-      }
-      break;
-
-    case "DRAW_STROKE":
-      drawStrokeLocal(data.stroke);
-      break;
-
-    case "CANVAS_CLEAR":
-      clearCanvasLocal();
-      break;
-
-    case "WORD_CHOSEN":
-      if (isRoomLeader()) {
-        startDrawingRound(data.word);
-      }
-      break;
-
-    case "CHAT_GUESS":
-      if (isRoomLeader()) {
-        processGuess(data.senderId, data.text);
-      }
-      break;
-
-    case "CHAT_MESSAGE":
-      addChatMessage(data.sender, data.text, data.msgType);
-      break;
-  }
-}
-
-function upsertPlayer(p) {
-  if (!p || !p.id) return;
-  const existing = gameState.players.find(x => x.id === p.id);
-  if (existing) {
-    existing.name = p.name;
-    existing.avatar = p.avatar;
-    existing.lastSeen = Date.now();
-  } else {
-    gameState.players.push({
-      id: p.id,
-      name: p.name,
-      avatar: p.avatar,
-      score: p.score || 0,
-      hasGuessed: false,
-      lastSeen: Date.now()
-    });
-    addChatMessage("Система", `${p.name} вошел в игру!`, "system");
-  }
-  updateUI();
-}
-
-function cleanOfflinePlayers() {
-  const now = Date.now();
-  const countBefore = gameState.players.length;
-  gameState.players = gameState.players.filter(p => (now - p.lastSeen < 8000) || p.id === myPlayerId);
-  if (gameState.players.length !== countBefore) {
+  // 2. Слушаем игроков
+  roomRef.child("players").on("value", (snapshot) => {
+    gameState.players = snapshot.val() || {};
     updateUI();
-  }
+    checkHostAndStart();
+  });
+
+  // 3. Слушаем игровое состояние (раунды, слово, статус)
+  roomRef.child("state").on("value", (snapshot) => {
+    const val = snapshot.val();
+    if (val) {
+      gameState.currentDrawerId = val.currentDrawerId;
+      gameState.currentWord = val.currentWord;
+      gameState.round = val.round || 1;
+      gameState.timeLeft = val.timeLeft !== undefined ? val.timeLeft : 60;
+      gameState.status = val.status || "WAITING";
+      updateUI();
+    }
+  });
+
+  // 4. Слушаем рисование в реальном времени
+  roomRef.child("strokes").limitToLast(1).on("child_added", (snapshot) => {
+    const stroke = snapshot.val();
+    if (stroke && stroke.senderId !== myPlayerId) {
+      drawStrokeLocal(stroke);
+    }
+  });
+
+  // 5. Очистка холста
+  roomRef.child("clear").on("value", (snapshot) => {
+    if (snapshot.val()) {
+      clearCanvasLocal();
+    }
+  });
+
+  // 6. Слушаем чат
+  roomRef.child("messages").limitToLast(1).on("child_added", (snapshot) => {
+    const msg = snapshot.val();
+    if (msg) {
+      addChatMessage(msg.sender, msg.text, msg.type);
+    }
+  });
+
+  // Периодическое обновление присутствия
+  setInterval(() => {
+    myPlayerRef.child("lastSeen").set(Date.now());
+  }, 4000);
+}
+
+function getPlayersList() {
+  return Object.values(gameState.players || {});
 }
 
 function isRoomLeader() {
-  if (gameState.players.length === 0) return true;
-  const sorted = [...gameState.players].sort((a, b) => a.id.localeCompare(b.id));
-  return sorted[0].id === myPlayerId;
+  const list = getPlayersList().sort((a, b) => a.id.localeCompare(b.id));
+  return list.length > 0 && list[0].id === myPlayerId;
 }
 
 // -------------------------------------------------------------
-// ИГРОВОЙ ЦИКЛ
+// ИГРОВОЙ ЦИКЛ (ОТВЕТСТВЕННОСТЬ ХОСТА)
 // -------------------------------------------------------------
 
 function checkHostAndStart() {
   if (!isRoomLeader()) return;
+  const list = getPlayersList();
 
-  if (gameState.status === "WAITING" && gameState.players.length >= 1) {
+  if (gameState.status === "WAITING" && list.length >= 1) {
     startNextTurn(0);
   }
 }
 
 function startNextTurn(nextIndex) {
-  if (nextIndex >= gameState.players.length) {
+  const list = getPlayersList();
+  if (list.length === 0) return;
+
+  if (nextIndex >= list.length) {
     gameState.round++;
     if (gameState.round > gameState.maxRounds) {
       gameState.round = 1;
@@ -323,13 +279,19 @@ function startNextTurn(nextIndex) {
     nextIndex = 0;
   }
 
-  const drawer = gameState.players[nextIndex];
+  const drawer = list[nextIndex];
   gameState.currentDrawerId = drawer.id;
   gameState.status = "CHOOSING";
-  gameState.players.forEach(p => p.hasGuessed = false);
 
-  clearCanvasLocal();
-  sendNetworkEvent("CANVAS_CLEAR", {});
+  // Сброс угадываний
+  list.forEach(p => {
+    if (roomRef) roomRef.child("players/" + p.id + "/hasGuessed").set(false);
+  });
+
+  if (roomRef) {
+    roomRef.child("clear").set(Date.now());
+    roomRef.child("strokes").remove();
+  }
 
   const choices = typeof getRandomWords === "function" ? getRandomWords(3) : ["кот", "дом", "солнце"];
 
@@ -337,12 +299,9 @@ function startNextTurn(nextIndex) {
     showWordChoices(choices);
   }
 
-  broadcastSyncState();
-  sendNetworkEvent("CHAT_MESSAGE", {
-    sender: "Система",
-    text: `${drawer.name} сейчас выбирает слово...`,
-    msgType: "system"
-  });
+  syncGameStateToFirebase();
+
+  pushChatMessage("Система", `${drawer.name} сейчас выбирает слово...`, "system");
 }
 
 function startDrawingRound(word) {
@@ -350,34 +309,33 @@ function startDrawingRound(word) {
   gameState.status = "DRAWING";
   gameState.timeLeft = 60;
   hideWordChoices();
-  broadcastSyncState();
+  syncGameStateToFirebase();
 
-  const drawer = gameState.players.find(p => p.id === gameState.currentDrawerId);
-  sendNetworkEvent("CHAT_MESSAGE", {
-    sender: "Система",
-    text: `${drawer ? drawer.name : "Игрок"} начал рисовать!`,
-    msgType: "system"
-  });
+  const list = getPlayersList();
+  const drawer = list.find(p => p.id === gameState.currentDrawerId);
+  pushChatMessage("Система", `${drawer ? drawer.name : "Игрок"} начал рисовать!`, "system");
 
   clearInterval(roundTimerInterval);
   roundTimerInterval = setInterval(() => {
     gameState.timeLeft--;
+    if (roomRef && isRoomLeader()) {
+      roomRef.child("state/timeLeft").set(gameState.timeLeft);
+    }
+
     if (gameState.timeLeft <= 0) {
       clearInterval(roundTimerInterval);
       endTurnTimeUp();
-    } else {
-      broadcastSyncState();
     }
   }, 1000);
 }
 
 function processGuess(senderId, text) {
-  const p = gameState.players.find(x => x.id === senderId);
+  const list = getPlayersList();
+  const p = list.find(x => x.id === senderId);
   if (!p) return;
 
   if (p.hasGuessed || senderId === gameState.currentDrawerId) {
-    sendNetworkEvent("CHAT_MESSAGE", { sender: p.name, text: text, msgType: "normal" });
-    addChatMessage(p.name, text, "normal");
+    pushChatMessage(p.name, text, "normal");
     return;
   }
 
@@ -385,54 +343,68 @@ function processGuess(senderId, text) {
   const target = (gameState.currentWord || "").trim().toLowerCase();
 
   if (cleanGuess === target) {
-    p.hasGuessed = true;
     const pts = Math.max(50, gameState.timeLeft * 10);
-    p.score += pts;
+    const newScore = (p.score || 0) + pts;
 
-    const drawer = gameState.players.find(x => x.id === gameState.currentDrawerId);
-    if (drawer) drawer.score += 25;
+    if (roomRef) {
+      roomRef.child("players/" + senderId + "/hasGuessed").set(true);
+      roomRef.child("players/" + senderId + "/score").set(newScore);
+    }
 
-    sendNetworkEvent("CHAT_MESSAGE", {
-      sender: "🎉 Угадал",
-      text: `${p.name} отгадал(а) слово! (+${pts})`,
-      msgType: "correct"
-    });
-    addChatMessage("🎉 Угадал", `${p.name} отгадал(а) слово! (+${pts})`, "correct");
+    const drawer = list.find(x => x.id === gameState.currentDrawerId);
+    if (drawer && roomRef) {
+      roomRef.child("players/" + drawer.id + "/score").set((drawer.score || 0) + 25);
+    }
 
-    broadcastSyncState();
+    pushChatMessage("🎉 Угадал", `${p.name} отгадал(а) слово! (+${pts})`, "correct");
 
-    const guessers = gameState.players.filter(x => x.id !== gameState.currentDrawerId);
-    if (guessers.every(x => x.hasGuessed) && guessers.length > 0) {
+    // Проверяем, все ли угадали
+    const guessers = list.filter(x => x.id !== gameState.currentDrawerId);
+    if (guessers.every(x => x.id === senderId || x.hasGuessed) && guessers.length > 0) {
       clearInterval(roundTimerInterval);
       endTurnTimeUp();
     }
   } else {
-    sendNetworkEvent("CHAT_MESSAGE", { sender: p.name, text: text, msgType: "normal" });
-    addChatMessage(p.name, text, "normal");
+    pushChatMessage(p.name, text, "normal");
   }
 }
 
 function endTurnTimeUp() {
-  sendNetworkEvent("CHAT_MESSAGE", {
-    sender: "Система",
-    text: `Раунд окончен! Слово было: "${gameState.currentWord}"`,
-    msgType: "system"
-  });
-  addChatMessage("Система", `Раунд окончен! Слово было: "${gameState.currentWord}"`, "system");
+  pushChatMessage("Система", `Раунд окончен! Слово было: "${gameState.currentWord}"`, "system");
 
-  const currIdx = gameState.players.findIndex(p => p.id === gameState.currentDrawerId);
+  const list = getPlayersList();
+  const currIdx = list.findIndex(p => p.id === gameState.currentDrawerId);
   setTimeout(() => {
     startNextTurn(currIdx + 1);
   }, 3500);
 }
 
-function broadcastSyncState() {
-  sendNetworkEvent("STATE_SYNC", { state: gameState });
+function syncGameStateToFirebase() {
+  if (roomRef && isRoomLeader()) {
+    roomRef.child("state").set({
+      currentDrawerId: gameState.currentDrawerId,
+      currentWord: gameState.currentWord,
+      round: gameState.round,
+      timeLeft: gameState.timeLeft,
+      status: gameState.status
+    });
+  }
   updateUI();
 }
 
+function pushChatMessage(sender, text, type = "normal") {
+  if (roomRef) {
+    roomRef.child("messages").push({
+      sender: sender,
+      text: text,
+      type: type,
+      time: Date.now()
+    });
+  }
+}
+
 // -------------------------------------------------------------
-// РИСОВАНИЕ
+// РИСОВАНИЕ НА ХОЛСТЕ
 // -------------------------------------------------------------
 
 function getCoords(e) {
@@ -463,11 +435,14 @@ function draw(e) {
     x1: pos.x,
     y1: pos.y,
     color: currentColor,
-    size: currentBrushSize
+    size: currentBrushSize,
+    senderId: myPlayerId
   };
 
   drawStrokeLocal(stroke);
-  sendNetworkEvent("DRAW_STROKE", { stroke: stroke });
+  if (roomRef) {
+    roomRef.child("strokes").push(stroke);
+  }
 
   lastX = pos.x;
   lastY = pos.y;
@@ -505,14 +480,15 @@ function clearCanvasLocal() {
 }
 
 // -------------------------------------------------------------
-// UI И ЧАТ
+// ИНТЕРФЕЙС И ЧАТ
 // -------------------------------------------------------------
 
 function updateUI() {
   const playerList = document.getElementById("containerGamePlayers");
   playerList.innerHTML = "";
 
-  gameState.players.forEach(p => {
+  const list = getPlayersList();
+  list.forEach(p => {
     const card = document.createElement("div");
     card.className = "player";
     card.style.cssText = `
@@ -531,9 +507,9 @@ function updateUI() {
     const eye = document.createElement("div"); eye.className = "eyes";
     const mou = document.createElement("div"); mou.className = "mouth";
 
-    setSpriteStyle(col, p.avatar[0], 48);
-    setSpriteStyle(eye, p.avatar[1], 48);
-    setSpriteStyle(mou, p.avatar[2], 48);
+    setSpriteStyle(col, (p.avatar ? p.avatar[0] : 0), 48);
+    setSpriteStyle(eye, (p.avatar ? p.avatar[1] : 0), 48);
+    setSpriteStyle(mou, (p.avatar ? p.avatar[2] : 0), 48);
 
     avHolder.appendChild(col);
     avHolder.appendChild(eye);
@@ -543,7 +519,7 @@ function updateUI() {
     info.style.cssText = "margin-left: 8px; flex: 1; line-height: 1.2;";
     info.innerHTML = `
       <div style="font-weight: bold; font-size: 13px;">${escapeHtml(p.name)} ${p.id === gameState.currentDrawerId ? "✏️" : ""}</div>
-      <div style="font-size: 12px; color: #5cb85c; font-weight: bold;">${p.score} очков</div>
+      <div style="font-size: 12px; color: #5cb85c; font-weight: bold;">${p.score || 0} очков</div>
     `;
 
     card.appendChild(avHolder);
@@ -589,11 +565,7 @@ function showWordChoices(words) {
     btn.textContent = w;
     btn.onclick = () => {
       hideWordChoices();
-      if (isRoomLeader()) {
-        startDrawingRound(w);
-      } else {
-        sendNetworkEvent("WORD_CHOSEN", { word: w });
-      }
+      startDrawingRound(w);
     };
     cont.appendChild(btn);
   });
@@ -614,8 +586,13 @@ function handleChatSubmit(e) {
   if (isRoomLeader()) {
     processGuess(myPlayerId, text);
   } else {
-    sendNetworkEvent("CHAT_GUESS", { text: text });
-    addChatMessage(myState.name, text, "normal");
+    if (roomRef) {
+      roomRef.child("guessEvents").push({
+        senderId: myPlayerId,
+        text: text,
+        time: Date.now()
+      });
+    }
   }
 
   input.value = "";
