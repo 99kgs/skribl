@@ -1,26 +1,30 @@
-/** Слова для игры — words-russian.json из репозитория danakt/russian-words */
-const WORDS_FALLBACK = ["кот", "дом", "солнце", "дерево", "машина", "лосось", "яблоко", "самолет"];
+/** Слова для детей — words-children.json (textometr.ru + простые дополнения) */
+const WORDS_FALLBACK = [
+  "кот", "дом", "солнце", "дерево", "машина", "яблоко", "собака", "мама", "мяч", "рыба"
+];
 
-let RUSSIAN_WORDS = null;
+let CHILDREN_WORDS = null;
 let WORD_LIST = WORDS_FALLBACK.slice();
 let wordsLoadPromise = null;
 
 function loadRussianWords() {
   if (wordsLoadPromise) return wordsLoadPromise;
-  wordsLoadPromise = fetch("words-russian.json?v=1")
+  wordsLoadPromise = fetch(
+    (typeof skribblAssetUrl === "function" ? skribblAssetUrl("words-children.json") : "words-children.json")
+  )
     .then(r => {
       if (!r.ok) throw new Error(String(r.status));
       return r.json();
     })
     .then(list => {
-      if (Array.isArray(list) && list.length > 100) {
-        RUSSIAN_WORDS = list;
+      if (Array.isArray(list) && list.length > 20) {
+        CHILDREN_WORDS = list;
         WORD_LIST = list;
       }
       return WORD_LIST;
     })
     .catch(() => {
-      RUSSIAN_WORDS = WORDS_FALLBACK;
+      CHILDREN_WORDS = WORDS_FALLBACK;
       WORD_LIST = WORDS_FALLBACK;
       return WORD_LIST;
     });
@@ -28,7 +32,7 @@ function loadRussianWords() {
 }
 
 function getGameWordList() {
-  if (RUSSIAN_WORDS && RUSSIAN_WORDS.length) return RUSSIAN_WORDS;
+  if (CHILDREN_WORDS && CHILDREN_WORDS.length) return CHILDREN_WORDS;
   if (WORD_LIST && WORD_LIST.length) return WORD_LIST;
   return WORDS_FALLBACK;
 }

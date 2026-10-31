@@ -16,13 +16,16 @@ function unlockGameSounds() {
   gameSoundsUnlocked = true;
 }
 
-function playGameSound(id, volume = 0.55) {
+function playGameSound(id, volume = 0.28) {
   if (!gameSoundsUnlocked) return;
   const file = GAME_SOUND_FILES[id];
   if (!file) return;
   try {
     if (!gameSoundCache[id]) {
-      gameSoundCache[id] = new Audio("sounds/" + file);
+      const path = "sounds/" + file;
+      gameSoundCache[id] = new Audio(
+        typeof skribblAssetUrl === "function" ? skribblAssetUrl(path) : path
+      );
     }
     const base = gameSoundCache[id];
     const clip = base.cloneNode();

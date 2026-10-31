@@ -44,6 +44,8 @@ let presenceAnnounced = false;
 let currentRoomCode = "";
 let roomTopic = "";
 
+const DRAW_ROUND_SECONDS = 60;
+
 // Состояние игры (синхронизируется хостом)
 let gameState = {
   players: {}, // id -> { id, name, avatar, score, hasGuessed, lastSeen }
@@ -52,10 +54,70 @@ let gameState = {
   round: 1,
   maxRounds: 3,
   timeLeft: 60,
-  status: "WAITING" // 'WAITING', 'CHOOSING', 'DRAWING'
+  status: "WAITING", // 'WAITING', 'CHOOSING', 'DRAWING'
+  hintRevealCount: 0,
+  hintLetterIndices: [],
+  drawRoundSeconds: DRAW_ROUND_SECONDS
 };
 
 let roundTimerInterval = null;
+
+function resetRoundHints() {
+  gameState.hintRevealCount = 0;
+  gameState.hintLetterIndices = [];
+  gameState.drawRoundSeconds = DRAW_ROUND_SECONDS;
+}
+
+function pickHintLetterIndices(word, maxHints) {
+  const indices = [];
+  for (let i = 0; i < word.length; i++) {
+    const ch = word[i];
+    if (ch !== " " && ch !== "-") indices.push(i);
+  }
+  if (!indices.length) return [];
+  let seed = 0;
+  for (let i = 0; i < word.length; i++) seed = (seed * 31 + word.charCodeAt(i)) | 0;
+  const pool = indices.slice();
+  for (let k = pool.length - 1; k > 0; k--) {
+    seed = (seed * 1103515245 + 12345) | 0;
+    const j = (seed >>> 0) % (k + 1);
+    [pool[k], pool[j]] = [pool[j], pool[k]];
+  }
+  return pool.slice(0, Math.min(maxHints, pool.length));
+}
+
+function hintRevealCountForTimeLeft(timeLeft, roundSeconds) {
+  const total = roundSeconds || DRAW_ROUND_SECONDS;
+  const elapsed = total - timeLeft;
+  if (elapsed >= total * 0.75) return 2;
+  if (elapsed >= total * 0.5) return 1;
+  return 0;
+}
+
+function formatWordForGuessers(word, revealCount, hintIndices) {
+  if (!word) return "_ _ _";
+  const revealed = new Set((hintIndices || []).slice(0, revealCount));
+  return word
+    .split("")
+    .map((ch, i) => {
+      if (ch === " ") return " ";
+      if (ch === "-") return "-";
+      if (revealed.has(i)) return ch.toUpperCase();
+      return "_";
+    })
+    .join(" ");
+}
+
+function applyHintProgressFromTimer() {
+  if (gameState.status !== "DRAWING" || !gameState.currentWord) return false;
+  const next = hintRevealCountForTimeLeft(
+    gameState.timeLeft,
+    gameState.drawRoundSeconds || DRAW_ROUND_SECONDS
+  );
+  if (next === gameState.hintRevealCount) return false;
+  gameState.hintRevealCount = next;
+  return true;
+}
 
 // Холст
 let canvas, ctx;
@@ -685,6 +747,11 @@ function handleIncomingPacket(packet) {
       gameState.maxRounds = packet.state.maxRounds;
       gameState.timeLeft = packet.state.timeLeft;
       gameState.status = packet.state.status;
+      gameState.hintRevealCount = packet.state.hintRevealCount ?? 0;
+      gameState.hintLetterIndices = Array.isArray(packet.state.hintLetterIndices)
+        ? packet.state.hintLetterIndices.slice()
+        : [];
+      gameState.drawRoundSeconds = packet.state.drawRoundSeconds || DRAW_ROUND_SECONDS;
       if (packet.state.wordChoices && packet.state.wordChoices.length) {
         pendingWordChoices = packet.state.wordChoices.slice();
       }
@@ -730,7 +797,10 @@ function handleIncomingPacket(packet) {
         const leaderId = getPlayersList().sort((a, b) => a.id.localeCompare(b.id))[0]?.id;
         if (packet.senderId === leaderId) {
           gameState.timeLeft = packet.timeLeft;
-          updateTimerDisplay();
+          if (typeof packet.hintRevealCount === "number") {
+            gameState.hintRevealCount = packet.hintRevealCount;
+          }
+          updateGameHeader();
         }
       }
       break;
@@ -885,9 +955,10 @@ function startNextTurn() {
 
   // Случайные слова
   const choices = [];
-  const wordsList = (typeof getGameWordList === "function")
-    ? getGameWordList()
-    : ((typeof RUSSIAN_WORDS !== "undefined" && RUSSIAN_WORDS.length) ? RUSSIAN_WORDS : ["кот", "дом", "солнце", "дерево", "машина"]);
+  const wordsList =
+    typeof getGameWordList === "function"
+      ? getGameWordList()
+      : ["кот", "дом", "солнце", "дерево", "машина"];
   while (choices.length < 3) {
     const randomWord = wordsList[Math.floor(Math.random() * wordsList.length)].toLowerCase();
     if (!choices.includes(randomWord)) choices.push(randomWord);
@@ -897,6 +968,7 @@ function startNextTurn() {
 
   gameState.status = "CHOOSING";
   gameState.currentWord = "";
+  resetRoundHints();
   gameState.timeLeft = 15;
   drawStrokeSeq = 0;
   stopCanvasSnapshotLoop();
@@ -947,14 +1019,17 @@ function startDrawingRound(word) {
   pendingWordChoices = [];
   gameState.status = "DRAWING";
   gameState.currentWord = word.toLowerCase();
-  gameState.timeLeft = 60;
+  gameState.timeLeft = DRAW_ROUND_SECONDS;
+  gameState.drawRoundSeconds = DRAW_ROUND_SECONDS;
+  gameState.hintRevealCount = 0;
+  gameState.hintLetterIndices = pickHintLetterIndices(gameState.currentWord, 2);
 
   const wLen = gameState.currentWord.length;
   broadcastChatMessage("Игра", `Раунд начался! Слово из ${wLen} ${letterWord(wLen)} — рисуй и угадывай.`, "system");
   syncStateToAll();
   pulseWordBanner();
   startCanvasSnapshotLoop();
-  playGameSound("roundStart", 0.65);
+  playGameSound("roundStart", 0.32);
   lastTickSoundSecond = -1;
 
   roundTimerInterval = setInterval(() => {
@@ -965,6 +1040,9 @@ function startDrawingRound(word) {
       stopCanvasSnapshotLoop();
       endTurnTimeUp();
     } else {
+      if (applyHintProgressFromTimer()) {
+        pulseWordBanner();
+      }
       broadcastTimerOnly();
     }
   }, 1000);
@@ -1019,7 +1097,7 @@ function processIncomingGuess(playerId, rawText) {
       }
 
       broadcastChatMessage("Игра", `${player.name} угадал слово (+${earned} очков)!`, "correct");
-      playGameSound("guessed", 0.7);
+      playGameSound("guessed", 0.35);
       updateChatInputPlaceholder();
 
       broadcastPacket({
@@ -1054,7 +1132,7 @@ function endTurnTimeUp() {
   stopCanvasSnapshotLoop();
   const guessers = getPlayersList().filter(p => p.id !== gameState.currentDrawerId);
   const someoneGuessed = guessers.some(p => p.hasGuessed);
-  playGameSound(someoneGuessed ? "roundSuccess" : "roundFailure", 0.6);
+  playGameSound(someoneGuessed ? "roundSuccess" : "roundFailure", 0.3);
   broadcastChatMessage("Игра", `Раунд окончен! Загаданное слово было: "${gameState.currentWord.toUpperCase()}".`, "system");
   setTimeout(() => {
     startNextTurn();
@@ -1096,16 +1174,20 @@ function syncStateToAll() {
       maxRounds: gameState.maxRounds,
       timeLeft: gameState.timeLeft,
       status: gameState.status,
+      hintRevealCount: gameState.hintRevealCount,
+      hintLetterIndices: gameState.hintLetterIndices,
+      drawRoundSeconds: gameState.drawRoundSeconds,
       wordChoices: gameState.status === "CHOOSING" ? pendingWordChoices : []
     }
   });
 }
 
 function broadcastTimerOnly() {
-  updateTimerDisplay();
+  updateGameHeader();
   broadcastPacket({
     type: "SYNC_TIMER",
-    timeLeft: gameState.timeLeft
+    timeLeft: gameState.timeLeft,
+    hintRevealCount: gameState.hintRevealCount
   });
 }
 
@@ -1507,7 +1589,7 @@ function updateTimerDisplay() {
     gameState.timeLeft !== lastTickSoundSecond
   ) {
     lastTickSoundSecond = gameState.timeLeft;
-    playGameSound("tick", 0.35);
+    playGameSound("tick", 0.15);
   }
   if (gameState.timeLeft > 10) lastTickSoundSecond = -1;
 }
@@ -1539,7 +1621,16 @@ function updateGameHeader() {
     if (isDrawer) {
       setBanner("Нарисуй", (gameState.currentWord || "").toUpperCase(), "word-drawer-mode");
     } else if (len > 0) {
-      setBanner("Угадай", gameState.currentWord.split("").map(() => "_").join(" "), "word-hint-mode");
+      const hintText = formatWordForGuessers(
+        gameState.currentWord,
+        gameState.hintRevealCount || 0,
+        gameState.hintLetterIndices
+      );
+      const label =
+        gameState.hintRevealCount > 0
+          ? `Подсказка (${gameState.hintRevealCount} ${letterWord(gameState.hintRevealCount)})`
+          : "Угадай";
+      setBanner(label, hintText, "word-hint-mode");
     } else {
       setBanner("Угадай", "_ _ _ _", "word-hint-mode");
     }

@@ -2,12 +2,42 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <!-- SKRIBBL_BUILD:e6ea21c -->
+  <meta name="skribbl-build" content="e6ea21c">
+  <script>
+    (function (w) {
+      var meta = document.querySelector('meta[name="skribbl-build"]');
+      var stamped = meta && meta.getAttribute("content");
+      w.SKRIBBL_BUILD = stamped && stamped !== "dev" ? stamped : String(Date.now());
+      w.skribblAssetUrl = function (path) {
+        if (!path || /^https?:\/\//i.test(path) || /^\/\//.test(path)) return path;
+        var sep = path.indexOf("?") >= 0 ? "&" : "?";
+        return path + sep + "v=" + encodeURIComponent(w.SKRIBBL_BUILD);
+      };
+      w.skribblLoadScript = function (src, next) {
+        var s = document.createElement("script");
+        s.src = w.skribblAssetUrl(src);
+        s.onload = function () { if (next) next(); };
+        s.onerror = function () { if (next) next(); };
+        (document.body || document.documentElement).appendChild(s);
+      };
+    })(window);
+  </script>
   <title>skribl - verity.sex</title>
   <link rel="icon" type="image/x-icon" href="favicon.ico?v=8">
   <link rel="shortcut icon" href="favicon.ico?v=8">
   <link rel="apple-touch-icon" href="favicon.png?v=8">
   <link rel="icon" type="image/png" sizes="64x64" href="favicon.png?v=8">
-  <link href="main.css" rel="stylesheet">
+  <link href="main.css" rel="stylesheet" id="skribbl-main-css">
+  <script>
+    (function () {
+      var link = document.getElementById("skribbl-main-css");
+      if (link && window.skribblAssetUrl) link.href = skribblAssetUrl("main.css");
+    })();
+  </script>
 
   <script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
 
@@ -601,8 +631,12 @@
     /** URL WebSocket-сервера (папка server/). Пример: https://xxx.onrender.com */
     window.SKRIBBL_SERVER_URL = "https://skribl-z8j9.onrender.com";
   </script>
-  <script src="words.js"></script>
-  <script src="game-sounds.js"></script>
-  <script src="game-engine.js"></script>
+  <script>
+    skribblLoadScript("words.js", function () {
+      skribblLoadScript("game-sounds.js", function () {
+        skribblLoadScript("game-engine.js");
+      });
+    });
+  </script>
 </body>
 </html>
