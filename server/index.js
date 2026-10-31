@@ -1,6 +1,5 @@
 /**
- * Minimal relay for skribbl (draw + game packets).
- * Deploy on Render/Railway/Fly, then open site with ?server=https://YOUR-HOST
+ * Relay + room roster so all players see each other in the same room.
  */
 const express = require("express");
 const http = require("http");
@@ -17,19 +16,62 @@ const io = new Server(server, {
   maxHttpBufferSize: 2e6
 });
 
+/** roomId -> Map(playerId -> player profile) */
+const roomRosters = new Map();
+
+function getRoster(room) {
+  const key = String(room).toLowerCase();
+  if (!roomRosters.has(key)) roomRosters.set(key, new Map());
+  return roomRosters.get(key);
+}
+
+function relayToRoom(socket, packet) {
+  const room = socket.data.room;
+  if (!room || !packet) return;
+  packet.senderId = packet.senderId || socket.data.playerId;
+  socket.to(room).emit("relay", packet);
+}
+
 io.on("connection", (socket) => {
-  socket.on("join", ({ room, playerId }) => {
+  socket.on("join", ({ room, playerId, player }, ack) => {
     if (!room) return;
-    socket.join(String(room).toLowerCase());
-    socket.data.room = String(room).toLowerCase();
+    const roomKey = String(room).toLowerCase();
+    socket.join(roomKey);
+    socket.data.room = roomKey;
     socket.data.playerId = playerId || socket.id;
+
+    const roster = getRoster(roomKey);
+    if (player && playerId) {
+      roster.set(playerId, player);
+    }
+
+    roster.forEach((existingPlayer, id) => {
+      if (id === socket.data.playerId) return;
+      socket.emit("relay", {
+        type: "PLAYER_JOIN",
+        senderId: id,
+        player: existingPlayer,
+        nonce: Math.random(),
+        timestamp: Date.now()
+      });
+    });
+
+    if (player && playerId) {
+      relayToRoom(socket, {
+        type: "PLAYER_JOIN",
+        player,
+        nonce: Math.random(),
+        timestamp: Date.now()
+      });
+    }
+
+    if (typeof ack === "function") {
+      ack({ ok: true, players: roster.size });
+    }
   });
 
   socket.on("relay", (packet) => {
-    const room = socket.data.room;
-    if (!room || !packet) return;
-    packet.senderId = packet.senderId || socket.data.playerId;
-    socket.to(room).emit("relay", packet);
+    relayToRoom(socket, packet);
   });
 
   socket.on("draw", (data) => {
@@ -43,6 +85,24 @@ io.on("connection", (socket) => {
     const room = socket.data.room;
     if (!room) return;
     socket.to(room).emit("clear");
+  });
+
+  socket.on("disconnect", () => {
+    const room = socket.data.room;
+    const playerId = socket.data.playerId;
+    if (!room || !playerId) return;
+    const roster = roomRosters.get(room);
+    if (roster) {
+      roster.delete(playerId);
+      if (roster.size === 0) roomRosters.delete(room);
+    }
+    socket.to(room).emit("relay", {
+      type: "PLAYER_LEAVE",
+      playerId,
+      senderId: playerId,
+      nonce: Math.random(),
+      timestamp: Date.now()
+    });
   });
 });
 

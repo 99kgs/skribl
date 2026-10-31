@@ -160,11 +160,13 @@ function parseRoomCode() {
 
   if (!room) {
     room = Math.random().toString(36).substring(2, 7);
+    const qs = new URLSearchParams(window.location.search);
+    qs.set("room", room.toLowerCase());
+    window.history.replaceState({}, "", `${window.location.pathname}?${qs.toString()}`);
   }
   currentRoomCode = room.toLowerCase();
   roomTopic = "skribbl_verity_game/" + currentRoomCode;
 
-  // Формируем чистую ссылку для шаринга
   const fullLink = `${window.location.origin}${window.location.pathname}?room=${currentRoomCode}`;
   const inputLink = document.getElementById("headerInviteLink");
   if (inputLink) inputLink.value = fullLink;
@@ -323,12 +325,16 @@ function initGameSocket() {
   gameSocket.on("connect", () => {
     useSocketRelay = true;
     stopCanvasSnapshotLoop();
-    gameSocket.emit("join", { room: currentRoomCode, playerId: myPlayerId });
+    const me = gameState.players[myPlayerId];
+    gameSocket.emit(
+      "join",
+      { room: currentRoomCode, playerId: myPlayerId, player: me },
+      () => {
+        broadcastPacket({ type: "REQUEST_SYNC" });
+      }
+    );
     addChatMessage("Сеть", "WebSocket-сервер подключён — рисование синхронное.", "system");
-    broadcastPacket({
-      type: "PLAYER_JOIN",
-      player: gameState.players[myPlayerId]
-    });
+    addChatMessage("Сеть", `Комната «${currentRoomCode}». Друзья должны открыть ту же ссылку сверху!`, "system");
   });
 
   gameSocket.on("disconnect", () => {
@@ -512,44 +518,64 @@ function handleIncomingPacket(packet) {
 
       if (isNew) {
         addChatMessage("Сеть", `${p.name} присоединился к игре!`, "system");
+      }
+      updatePlayerList();
+      updateGameHeader();
+      if (isNew && isRoomLeader()) {
+        syncStateToAll();
+      }
+      break;
+    }
+
+    case "PLAYER_LEAVE": {
+      if (packet.playerId && gameState.players[packet.playerId]) {
+        addChatMessage("Сеть", `${gameState.players[packet.playerId].name} вышел.`, "system");
+        delete gameState.players[packet.playerId];
+        lastPlayerListSignature = "";
         updatePlayerList();
         updateGameHeader();
-        if (isRoomLeader()) {
-          syncStateToAll();
-        }
+        if (isRoomLeader()) syncStateToAll();
+      }
+      break;
+    }
+
+    case "REQUEST_SYNC": {
+      if (isRoomLeader()) {
+        syncStateToAll();
       }
       break;
     }
 
     case "SYNC_STATE": {
-      if (!isRoomLeader()) {
-        const leaderId = getPlayersList().sort((a,b) => a.id.localeCompare(b.id))[0]?.id;
-        if (packet.senderId === leaderId) {
-          gameState.currentDrawerId = packet.state.currentDrawerId;
-          gameState.currentWord = packet.state.currentWord;
-          gameState.round = packet.state.round;
-          gameState.maxRounds = packet.state.maxRounds;
-          gameState.timeLeft = packet.state.timeLeft;
-          gameState.status = packet.state.status;
+      const statePlayers = packet.state?.players || {};
+      const stateLeaderId = getStateLeaderId(statePlayers);
+      if (!stateLeaderId || packet.senderId !== stateLeaderId) break;
+      if (isRoomLeader() && myPlayerId === stateLeaderId) break;
 
-          Object.keys(packet.state.players).forEach(id => {
-            if (id === myPlayerId) {
-              const remoteMe = packet.state.players[id];
-              if (remoteMe && gameState.players[myPlayerId]) {
-                gameState.players[myPlayerId].score = remoteMe.score;
-                gameState.players[myPlayerId].hasGuessed = remoteMe.hasGuessed;
-              }
-            } else {
-              gameState.players[id] = packet.state.players[id];
-            }
-          });
+      gameState.currentDrawerId = packet.state.currentDrawerId;
+      gameState.currentWord = packet.state.currentWord;
+      gameState.round = packet.state.round;
+      gameState.maxRounds = packet.state.maxRounds;
+      gameState.timeLeft = packet.state.timeLeft;
+      gameState.status = packet.state.status;
 
-          updatePlayerList();
-          updateGameHeader();
-          if (packet.state.status === "DRAWING") {
-            hideWordChoices();
+      Object.keys(statePlayers).forEach(id => {
+        if (id === myPlayerId) {
+          const remoteMe = statePlayers[id];
+          if (remoteMe && gameState.players[myPlayerId]) {
+            gameState.players[myPlayerId].score = remoteMe.score;
+            gameState.players[myPlayerId].hasGuessed = remoteMe.hasGuessed;
           }
+        } else {
+          gameState.players[id] = statePlayers[id];
         }
+      });
+
+      lastPlayerListSignature = "";
+      updatePlayerList();
+      updateGameHeader();
+      if (packet.state.status === "DRAWING") {
+        hideWordChoices();
       }
       break;
     }
@@ -631,9 +657,13 @@ function handleIncomingPacket(packet) {
   }
 }
 
-// -------------------------------------------------------------
-// Игровая логика: Раунды, Очередь, Проверка слов (Хост/Лидер)
-// -------------------------------------------------------------
+const MIN_PLAYERS_TO_START = 2;
+
+function getStateLeaderId(playersObj) {
+  const ids = Object.keys(playersObj || {});
+  if (!ids.length) return null;
+  return ids.sort((a, b) => a.localeCompare(b))[0];
+}
 
 function removeOfflinePlayers() {
   const now = Date.now();
@@ -667,7 +697,17 @@ function checkGameProgress() {
   if (!isRoomLeader()) return;
 
   const players = getPlayersList();
-  if (players.length >= 1 && gameState.status === "WAITING") {
+  if (players.length < MIN_PLAYERS_TO_START) {
+    if (gameState.status === "WAITING") {
+      const wordDisplay = document.getElementById("currentWord");
+      if (wordDisplay) {
+        wordDisplay.textContent = `ЖДЁМ ИГРОКОВ (${players.length}/${MIN_PLAYERS_TO_START})…`;
+      }
+    }
+    return;
+  }
+
+  if (gameState.status === "WAITING") {
     startNextTurn();
   }
 }
