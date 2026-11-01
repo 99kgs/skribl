@@ -421,6 +421,7 @@ function setupUIEvents() {
     item.addEventListener("click", () => {
       currentColor = item.dataset.color;
       setActiveTool("pen");
+      if (typeof noteDrawColorChange === "function") noteDrawColorChange(currentColor);
       const preview = document.getElementById("currentColorPreview");
       if (preview) preview.style.background = currentColor;
     });
@@ -458,6 +459,7 @@ function setupUIEvents() {
       if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
         pushUndoSnapshot();
         clearCanvasLocal();
+        if (typeof noteDrawClear === "function") noteDrawClear();
         broadcastPacket({ type: "CLEAR" });
         if (useSocketRelay && gameSocket && gameSocket.connected) {
           gameSocket.emit("clear");
@@ -926,6 +928,12 @@ function handleIncomingPacket(packet) {
       break;
     }
 
+    case "DRAW_EVENT": {
+      if (packet.senderId !== gameState.currentDrawerId) break;
+      if (typeof onRemoteDrawEvent === "function") onRemoteDrawEvent(packet);
+      break;
+    }
+
     case "GUESS_RESULT": {
       if (packet.drawingEpoch != null && packet.drawingEpoch !== gameState.drawingEpoch) break;
       if (packet.targetId === myPlayerId && gameState.players[myPlayerId]) {
@@ -1090,6 +1098,7 @@ function startDrawingRound(word) {
   startCanvasSnapshotLoop();
   playGameSound("roundStart", 0.32);
   lastTickSoundSecond = -1;
+  if (typeof resetDrawEvents === "function") resetDrawEvents();
 
   roundTimerInterval = setInterval(() => {
     gameState.timeLeft--;
@@ -1328,6 +1337,7 @@ function undoCanvas() {
   const data = undoStack.pop();
   ctx.putImageData(data, 0, 0);
   broadcastCanvasAfterEdit();
+  if (typeof noteDrawUndo === "function") noteDrawUndo();
 }
 
 function fillEntireCanvas(color) {
@@ -1402,6 +1412,7 @@ function floodFillAt(x, y, fillCss) {
 
   ctx.putImageData(img, 0, 0);
   broadcastCanvasAfterEdit();
+  if (typeof noteDrawFill === "function") noteDrawFill();
 }
 
 function startDrawing(e) {
@@ -1420,6 +1431,7 @@ function startDrawing(e) {
   const coords = getCoords(e);
   lastX = coords.x;
   lastY = coords.y;
+  if (typeof noteDrawStrokeStart === "function") noteDrawStrokeStart(lastX, lastY);
 }
 
 function draw(e) {
@@ -1430,6 +1442,12 @@ function draw(e) {
 
   drawStrokeLocal(lastX, lastY, coords.x, coords.y, color, currentBrushSize);
   emitDrawSegment(lastX, lastY, coords.x, coords.y, color, currentBrushSize);
+  if (typeof noteDrawSegment === "function") {
+    noteDrawSegment(lastX, lastY, coords.x, coords.y, {
+      erase: isRightErase || color === "#ffffff",
+      size: currentBrushSize
+    });
+  }
   if (!useSocketRelay) {
     queueDrawBroadcast(lastX, lastY, coords.x, coords.y, color, currentBrushSize);
   }
@@ -1549,6 +1567,9 @@ function applyRemoteStroke(prevX, prevY, currX, currY, color, size) {
 function stopDrawing() {
   if (isDrawing && pendingDrawPoints.length) {
     flushDrawBroadcast();
+  }
+  if (isDrawing && typeof noteDrawStrokeEnd === "function") {
+    noteDrawStrokeEnd(lastX, lastY);
   }
   isDrawing = false;
 }
