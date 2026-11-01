@@ -127,7 +127,6 @@ function beginChoosingPhase() {
   gameState.status = "CHOOSING";
   gameState.currentWord = "";
   resetRoundHints();
-  awaitingWordChoiceAck = false;
   displayedWordChoicesKey = "";
   gameState.timeLeft = 15;
   drawStrokeSeq = 0;
@@ -382,8 +381,7 @@ let canvasSnapshotTimer = null;
 let lastSnapshotSentAt = 0;
 let lastPlayerListSignature = "";
 let pendingWordChoices = [];
-/** Рисующий отправил WORD_CHOSEN, ждём SYNC от лидера — не перерисовывать модалку по таймеру */
-let awaitingWordChoiceAck = false;
+/** Не пересоздавать кнопки выбора слова на каждом тике таймера */
 let displayedWordChoicesKey = "";
 let currentTool = "pen";
 /** ПКМ: временное стирание без смены выбранного инструмента */
@@ -566,7 +564,7 @@ function parseRoomCode() {
     window.history.replaceState({}, "", `${window.location.pathname}?${qs.toString()}`);
   }
   currentRoomCode = room.toLowerCase();
-  roomTopic = "skribbl_verity_game/" + currentRoomCode;
+  roomTopic = "veritybl_game/" + currentRoomCode;
 
   const fullLink = `${window.location.origin}${window.location.pathname}?room=${currentRoomCode}`;
   const inputLink = document.getElementById("headerInviteLink");
@@ -1041,9 +1039,8 @@ function handleIncomingPacket(packet) {
       updatePlayerList();
       updateGameHeader();
       if (packet.state.status === "DRAWING") {
-        awaitingWordChoiceAck = false;
         hideWordChoices();
-      } else if (packet.state.status === "CHOOSING" && gameState.currentDrawerId === myPlayerId && pendingWordChoices.length && !awaitingWordChoiceAck) {
+      } else if (packet.state.status === "CHOOSING" && gameState.currentDrawerId === myPlayerId && pendingWordChoices.length) {
         showWordChoices(pendingWordChoices);
       }
       break;
@@ -1115,7 +1112,6 @@ function handleIncomingPacket(packet) {
     case "WORD_CHOICES": {
       if (packet.targetId === myPlayerId) {
         pendingWordChoices = packet.choices || [];
-        awaitingWordChoiceAck = false;
         displayedWordChoicesKey = "";
         showWordChoices(pendingWordChoices);
       } else {
@@ -1139,9 +1135,13 @@ function handleIncomingPacket(packet) {
       if (!isRoomLeader()) break;
       if (gameState.status !== "CHOOSING") break;
       if (packet.senderId !== gameState.currentDrawerId) break;
-      const chosen = String(packet.word || "").toLowerCase();
-      if (pendingWordChoices.length && !pendingWordChoices.includes(chosen)) break;
-      startDrawingRound(chosen || pendingWordChoices[0]);
+      let chosen = String(packet.word || "").trim().toLowerCase();
+      if (pendingWordChoices.length) {
+        const match = pendingWordChoices.find(w => w.toLowerCase() === chosen);
+        chosen = match || pendingWordChoices[0];
+      }
+      if (!chosen) break;
+      startDrawingRound(chosen);
       break;
     }
 
@@ -1255,7 +1255,6 @@ function startDrawingRound(word) {
   gameState.hintLetterIndices = pickHintLetterIndices(gameState.currentWord, 2);
   gameState.drawingEpoch = (gameState.drawingEpoch || 0) + 1;
   gameState.guessesThisRound = 0;
-  awaitingWordChoiceAck = false;
   displayedWordChoicesKey = "";
 
   const wLen = gameState.currentWord.length;
@@ -1960,8 +1959,11 @@ function updateGameHeader() {
     }
   } else if (gameState.status === "CHOOSING") {
     setBanner("Раунд", "ВЫБОР СЛОВА…", null);
-    if (isDrawer && pendingWordChoices.length && !awaitingWordChoiceAck) {
-      showWordChoices(pendingWordChoices);
+    if (isDrawer && pendingWordChoices.length) {
+      const modal = document.getElementById("word-select-modal");
+      if (modal && modal.classList.contains("hidden")) {
+        showWordChoices(pendingWordChoices);
+      }
     }
   } else if (gameState.status === "TURN_END" && gameState.currentWord) {
     setBanner("Раунд окончен", gameState.currentWord.toUpperCase(), null);
@@ -1975,12 +1977,7 @@ function updateGameHeader() {
     toolbar.style.display = showBar ? "flex" : "none";
   }
 
-  if (
-    gameState.status === "CHOOSING" &&
-    gameState.currentDrawerId === myPlayerId &&
-    !pendingWordChoices.length &&
-    !awaitingWordChoiceAck
-  ) {
+  if (gameState.status === "CHOOSING" && gameState.currentDrawerId === myPlayerId && !pendingWordChoices.length) {
     const now = Date.now();
     if (now - lastWordChoicesRequestAt > 2500) {
       lastWordChoicesRequestAt = now;
@@ -2007,6 +2004,23 @@ function updateUI() {
   updateGameHeader();
 }
 
+function commitWordChoice(word) {
+  if (gameState.currentDrawerId !== myPlayerId || gameState.status !== "CHOOSING") return;
+  const picked = String(word ?? "").trim().toLowerCase();
+  if (!picked) return;
+
+  hideWordChoices();
+  displayedWordChoicesKey = "";
+
+  if (isRoomLeader()) {
+    startDrawingRound(picked);
+    return;
+  }
+
+  broadcastPacket({ type: "WORD_CHOSEN", word: picked });
+  broadcastPacket({ type: "REQUEST_SYNC" });
+}
+
 function showWordChoices(words) {
   if (gameState.currentDrawerId !== myPlayerId) {
     hideWordChoices();
@@ -2027,18 +2041,8 @@ function showWordChoices(words) {
     const btn = document.createElement("button");
     btn.className = "word-btn-opt";
     btn.textContent = w;
-    btn.onclick = () => {
-      awaitingWordChoiceAck = true;
-      hideWordChoices();
-      if (isRoomLeader()) {
-        startDrawingRound(w);
-      } else {
-        broadcastPacket({
-          type: "WORD_CHOSEN",
-          word: w
-        });
-      }
-    };
+    btn.type = "button";
+    btn.addEventListener("click", () => commitWordChoice(w));
     cont.appendChild(btn);
   });
 
