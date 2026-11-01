@@ -88,13 +88,241 @@ let gameState = {
   /** Меняется каждый раунд рисования — защита от устаревших пакетов */
   drawingEpoch: 0,
   /** Сколько уже угадали в текущем раунде (только у хоста) */
-  guessesThisRound: 0
+  guessesThisRound: 0,
+  skipWordVotes: {}
 };
 
 let isShapeDragging = false;
 let shapeStart = null;
 let shapeEnd = null;
 let shapeBaseSnapshot = null;
+let lastCanvasReactAt = 0;
+
+const CANVAS_REACT_EMOJIS = ["🔥", "😂", "💀", "👏", "❤️", "👎"];
+
+function pickRandomWordChoices(count = 3) {
+  const wordsList =
+    typeof getGameWordList === "function"
+      ? getGameWordList()
+      : ["кот", "дом", "солнце", "дерево", "машина"];
+  const choices = [];
+  while (choices.length < count) {
+    const randomWord = wordsList[Math.floor(Math.random() * wordsList.length)].toLowerCase();
+    if (!choices.includes(randomWord)) choices.push(randomWord);
+  }
+  return choices;
+}
+
+function rotateDrawerToNext() {
+  const players = getPlayersList();
+  if (!players.length) return;
+  const currentIndex = players.findIndex(p => p.id === gameState.currentDrawerId);
+  const nextIndex = (currentIndex + 1) % players.length;
+  gameState.currentDrawerId = players[nextIndex].id;
+}
+
+function getSkipVotesRequired() {
+  const guessers = getPlayersList().filter(p => p.id !== gameState.currentDrawerId);
+  if (guessers.length <= 0) return 1;
+  return Math.max(1, Math.ceil(guessers.length / 2));
+}
+
+function resetSkipWordVotes() {
+  gameState.skipWordVotes = {};
+  updateSkipWordVoteUi(0, getSkipVotesRequired(), false);
+}
+
+function broadcastSkipWordState() {
+  const votes = gameState.skipWordVotes || {};
+  const count = Object.keys(votes).length;
+  const needed = getSkipVotesRequired();
+  broadcastPacket({
+    type: "SKIP_WORD_STATE",
+    count,
+    needed,
+    voterIds: Object.keys(votes)
+  });
+  updateSkipWordVoteUi(count, needed, !!votes[myPlayerId]);
+}
+
+function updateSkipWordVoteUi(count, needed, iVoted) {
+  const btn = document.getElementById("btnSkipWordVote");
+  if (!btn) return;
+  const isDrawer = gameState.currentDrawerId === myPlayerId;
+  const show = gameState.status === "DRAWING" && !isDrawer;
+  btn.classList.toggle("hidden", !show);
+  if (!show) return;
+  if (typeof count !== "number") {
+    count = Object.keys(gameState.skipWordVotes || {}).length;
+    needed = getSkipVotesRequired();
+    iVoted = !!(gameState.skipWordVotes && gameState.skipWordVotes[myPlayerId]);
+  }
+  btn.textContent = iVoted
+    ? `Отменить голос (${count}/${needed})`
+    : `Сменить рисующего (${count}/${needed})`;
+  btn.classList.toggle("skip-word-active", !!iVoted);
+}
+
+function beginChoosingPhase() {
+  const choices = pickRandomWordChoices();
+  pendingWordChoices = choices.slice();
+
+  gameState.status = "CHOOSING";
+  gameState.currentWord = "";
+  resetRoundHints();
+  resetSkipWordVotes();
+  gameState.timeLeft = 15;
+  drawStrokeSeq = 0;
+  stopCanvasSnapshotLoop();
+
+  clearCanvasLocal();
+  resetRemoteDrawSync();
+  broadcastPacket({ type: "CLEAR" });
+  if (useSocketRelay && gameSocket && gameSocket.connected) {
+    gameSocket.emit("clear");
+  }
+
+  if (gameState.currentDrawerId === myPlayerId) {
+    showWordChoices(choices);
+  } else {
+    hideWordChoices();
+  }
+
+  broadcastPacket({
+    type: "WORD_SELECT_PROMPT",
+    drawerId: gameState.currentDrawerId
+  });
+
+  broadcastPacket({
+    type: "WORD_CHOICES",
+    targetId: gameState.currentDrawerId,
+    choices: pendingWordChoices
+  });
+
+  const drawerName = gameState.players[gameState.currentDrawerId]?.name || "Игрок";
+  broadcastChatMessage("Игра", `${drawerName} выбирает слово...`, "system");
+
+  syncStateToAll();
+
+  clearInterval(roundTimerInterval);
+  roundTimerInterval = setInterval(() => {
+    gameState.timeLeft--;
+    if (gameState.timeLeft <= 0) {
+      clearInterval(roundTimerInterval);
+      roundTimerInterval = null;
+      if (gameState.status === "CHOOSING") {
+        startDrawingRound(choices[0]);
+      }
+    } else {
+      broadcastTimerOnly();
+    }
+  }, 1000);
+}
+
+function transferDrawAfterSkipVote() {
+  if (gameState.status !== "DRAWING") return;
+  const oldWord = (gameState.currentWord || "").toUpperCase();
+  const oldDrawerName = gameState.players[gameState.currentDrawerId]?.name || "Игрок";
+
+  clearInterval(roundTimerInterval);
+  roundTimerInterval = null;
+  stopCanvasSnapshotLoop();
+
+  getPlayersList().forEach(p => {
+    p.hasGuessed = false;
+  });
+  clearGuessedChatMessages();
+  gameState.guessesThisRound = 0;
+
+  rotateDrawerToNext();
+  const newDrawerName = gameState.players[gameState.currentDrawerId]?.name || "Игрок";
+  broadcastChatMessage(
+    "Игра",
+    `Голос «сменить слово» (${oldWord}). Рисует ${newDrawerName}.`,
+    "system"
+  );
+
+  beginChoosingPhase();
+}
+
+function processSkipWordVote(playerId, wantSkip) {
+  if (gameState.status !== "DRAWING") return;
+  if (playerId === gameState.currentDrawerId) return;
+  if (!gameState.players[playerId]) return;
+
+  if (!gameState.skipWordVotes) gameState.skipWordVotes = {};
+  if (wantSkip) gameState.skipWordVotes[playerId] = true;
+  else delete gameState.skipWordVotes[playerId];
+
+  const count = Object.keys(gameState.skipWordVotes).length;
+  const needed = getSkipVotesRequired();
+  broadcastSkipWordState();
+
+  if (count >= needed) {
+    transferDrawAfterSkipVote();
+  }
+}
+
+function sendCanvasReact(emoji) {
+  if (!CANVAS_REACT_EMOJIS.includes(emoji)) return;
+  if (gameState.status !== "DRAWING") return;
+  if (gameState.currentDrawerId === myPlayerId) return;
+  const now = Date.now();
+  if (now - lastCanvasReactAt < 1200) return;
+  lastCanvasReactAt = now;
+
+  showFloatingCanvasReact(emoji, myState.name || "Игрок");
+  broadcastPacket({
+    type: "CANVAS_REACT",
+    emoji,
+    senderName: myState.name || "Игрок"
+  });
+}
+
+function showFloatingCanvasReact(emoji, senderName) {
+  const layer = document.getElementById("canvasReactLayer");
+  if (!layer) return;
+  const el = document.createElement("div");
+  el.className = "canvas-react-float";
+  el.innerHTML = `<span class="canvas-react-emoji">${emoji}</span><span class="canvas-react-who">${escapeHtml(senderName)}</span>`;
+  el.style.left = 8 + Math.random() * 72 + "%";
+  el.style.bottom = 12 + Math.random() * 28 + "%";
+  layer.appendChild(el);
+  setTimeout(() => el.remove(), 2200);
+}
+
+function setupCanvasReactBar() {
+  const bar = document.getElementById("canvasReactBar");
+  if (!bar || bar.dataset.wired) return;
+  bar.dataset.wired = "1";
+  CANVAS_REACT_EMOJIS.forEach(emoji => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "canvas-react-btn";
+    b.textContent = emoji;
+    b.title = "Реакция на рисунок";
+    b.addEventListener("click", () => sendCanvasReact(emoji));
+    bar.appendChild(b);
+  });
+
+  const skipBtn = document.getElementById("btnSkipWordVote");
+  if (skipBtn && !skipBtn.dataset.wired) {
+    skipBtn.dataset.wired = "1";
+    skipBtn.addEventListener("click", () => {
+      if (gameState.currentDrawerId === myPlayerId) return;
+      if (gameState.status !== "DRAWING") return;
+      const voted = !!(gameState.skipWordVotes && gameState.skipWordVotes[myPlayerId]);
+      if (isRoomLeader()) {
+        processSkipWordVote(myPlayerId, !voted);
+      } else {
+        broadcastPacket({
+          type: "SKIP_WORD_VOTE",
+          active: !voted
+        });
+      }
+    });
+  }
+}
 
 function isShapeTool(tool) {
   return tool === "line" || tool === "rect" || tool === "circle";
@@ -299,6 +527,7 @@ function bootApp() {
   parseRoomCode();
   syncGamePanelHeights();
   window.addEventListener("resize", syncGamePanelHeights);
+  setupCanvasReactBar();
 }
 
 if (document.readyState === "loading") {
@@ -964,6 +1193,30 @@ function handleIncomingPacket(packet) {
       break;
     }
 
+    case "SKIP_WORD_VOTE": {
+      if (isRoomLeader()) {
+        processSkipWordVote(packet.senderId, packet.active !== false);
+      }
+      break;
+    }
+
+    case "SKIP_WORD_STATE": {
+      const leaderId = getStateLeaderId(gameState.players);
+      if (packet.senderId !== leaderId) break;
+      gameState.skipWordVotes = {};
+      (packet.voterIds || []).forEach(id => {
+        gameState.skipWordVotes[id] = true;
+      });
+      updateSkipWordVoteUi(packet.count, packet.needed, !!gameState.skipWordVotes[myPlayerId]);
+      break;
+    }
+
+    case "CANVAS_REACT": {
+      if (packet.senderId === myPlayerId) break;
+      showFloatingCanvasReact(packet.emoji || "👍", packet.senderName || "Игрок");
+      break;
+    }
+
     case "CLEAR": {
       clearCanvasLocal();
       resetRemoteDrawSync();
@@ -1097,73 +1350,10 @@ function startNextTurn() {
   const players = getPlayersList();
   if (players.length === 0) return;
 
-  // Сброс статуса угадывания
-  players.forEach(p => p.hasGuessed = false);
+  players.forEach(p => { p.hasGuessed = false; });
   clearGuessedChatMessages();
-
-  // Выбор следующего рисующего
-  let currentIndex = players.findIndex(p => p.id === gameState.currentDrawerId);
-  let nextIndex = (currentIndex + 1) % players.length;
-  gameState.currentDrawerId = players[nextIndex].id;
-
-  // Случайные слова
-  const choices = [];
-  const wordsList =
-    typeof getGameWordList === "function"
-      ? getGameWordList()
-      : ["кот", "дом", "солнце", "дерево", "машина"];
-  while (choices.length < 3) {
-    const randomWord = wordsList[Math.floor(Math.random() * wordsList.length)].toLowerCase();
-    if (!choices.includes(randomWord)) choices.push(randomWord);
-  }
-
-  pendingWordChoices = choices.slice();
-
-  gameState.status = "CHOOSING";
-  gameState.currentWord = "";
-  resetRoundHints();
-  gameState.timeLeft = 15;
-  drawStrokeSeq = 0;
-  stopCanvasSnapshotLoop();
-
-  clearCanvasLocal();
-  resetRemoteDrawSync();
-  broadcastPacket({ type: "CLEAR" });
-
-  if (gameState.currentDrawerId === myPlayerId) {
-    showWordChoices(choices);
-  } else {
-    hideWordChoices();
-  }
-
-  broadcastPacket({
-    type: "WORD_SELECT_PROMPT",
-    drawerId: gameState.currentDrawerId
-  });
-
-  broadcastPacket({
-    type: "WORD_CHOICES",
-    targetId: gameState.currentDrawerId,
-    choices: pendingWordChoices
-  });
-
-  const drawerName = gameState.players[gameState.currentDrawerId]?.name || "Игрок";
-  broadcastChatMessage("Игра", `${drawerName} выбирает слово...`, "system");
-
-  syncStateToAll();
-
-  clearInterval(roundTimerInterval);
-  roundTimerInterval = setInterval(() => {
-    gameState.timeLeft--;
-    if (gameState.timeLeft <= 0) {
-      clearInterval(roundTimerInterval);
-      if (gameState.status === "CHOOSING") {
-        startDrawingRound(choices[0]);
-      }
-    } else {
-      broadcastTimerOnly();
-    }
-  }, 1000);
+  rotateDrawerToNext();
+  beginChoosingPhase();
 }
 
 function startDrawingRound(word) {
@@ -1178,6 +1368,7 @@ function startDrawingRound(word) {
   gameState.hintLetterIndices = pickHintLetterIndices(gameState.currentWord, 2);
   gameState.drawingEpoch = (gameState.drawingEpoch || 0) + 1;
   gameState.guessesThisRound = 0;
+  resetSkipWordVotes();
 
   const wLen = gameState.currentWord.length;
   broadcastChatMessage("Игра", `Раунд начался! Слово из ${wLen} ${letterWord(wLen)}. Раньше угадал — больше очков.`, "system");
@@ -1906,6 +2097,13 @@ function updateGameHeader() {
 
   updateChatInputPlaceholder();
   updateGuessedChatPanelVisibility();
+
+  const reactBar = document.getElementById("canvasReactBar");
+  if (reactBar) {
+    const showReact = gameState.status === "DRAWING" && !isDrawer;
+    reactBar.classList.toggle("hidden", !showReact);
+  }
+  updateSkipWordVoteUi();
 
   if (gameState.currentDrawerId !== myPlayerId) {
     hideWordChoices();
