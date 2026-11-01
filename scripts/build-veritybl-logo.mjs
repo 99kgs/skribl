@@ -1,5 +1,5 @@
 /**
- * Crop user artwork + build animated logo-veritybl.gif
+ * Crop logo PNG (transparent). Animation is CSS wobble in index.html.
  * Run: node scripts/build-veritybl-logo.mjs
  */
 import fs from "fs";
@@ -14,15 +14,11 @@ const assetsDir = path.join(root, "img", "veritybl");
 const srcDraw =
   process.env.VERITYBL_DRAW_SRC ||
   "C:\\Users\\User\\.cursor\\projects\\c-Users-User-Desktop-skribbl-game\\assets\\veritybl-37470b51-e6fc-4278-81e6-7ba8eb72ddaa.png";
-const srcScreen =
-  process.env.VERITYBL_SCREEN_SRC ||
-  "C:\\Users\\User\\.cursor\\projects\\c-Users-User-Desktop-skribbl-game\\assets\\image-2ead882b-f797-4abd-aae9-d935f2f01a7f.png";
 
 fs.mkdirSync(assetsDir, { recursive: true });
 
 const outDirPy = assetsDir.replace(/\\/g, "\\\\");
 const srcDrawPy = srcDraw.replace(/\\/g, "\\\\");
-const srcScreenPy = srcScreen.replace(/\\/g, "\\\\");
 
 const py = `
 from PIL import Image
@@ -48,34 +44,22 @@ def crop_content(im, pad=12):
     x0=max(0,x0); y0=max(0,y0); x1=min(w-1,x1); y1=min(h-1,y1)
     return im.crop((x0,y0,x1+1,y1+1))
 
-draw = crop_content(Image.open(r"${srcDrawPy}"), 16)
+def knock_out_white(im, threshold=235):
+    im = im.convert("RGBA")
+    px = im.load()
+    w, h = im.size
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            if a < 8:
+                px[x, y] = (0, 0, 0, 0)
+            elif r >= threshold and g >= threshold and b >= threshold:
+                px[x, y] = (0, 0, 0, 0)
+    return im
+
+draw = knock_out_white(crop_content(Image.open(r"${srcDrawPy}"), 16))
 draw.save(out_dir + "/frame-draw.png")
-
-screen = Image.open(r"${srcScreenPy}").convert("RGBA")
-sw, sh = screen.size
-header = screen.crop((int(sw*0.22), int(sh*0.02), int(sw*0.78), int(sh*0.12)))
-header = crop_content(header, 6)
-header.save(out_dir + "/frame-mascot-strip.png")
-
-target_h = max(draw.height, header.height, 72)
-
-def scale_to_h(im, th):
-    r = th / im.height
-    nw = max(1, int(im.width * r))
-    return im.resize((nw, th), Image.Resampling.LANCZOS)
-
-d1 = scale_to_h(draw, target_h)
-d2 = scale_to_h(draw, int(target_h * 1.05))
-canvas2 = Image.new("RGBA", d1.size, (0,0,0,0))
-canvas2.paste(d2, ((d1.width-d2.width)//2, (d1.height-d2.height)//2), d2)
-
-gif_path = out_dir + "/logo-veritybl.gif"
-frames = [
-    d1.convert("P", palette=Image.ADAPTIVE, colors=128),
-    canvas2.convert("P", palette=Image.ADAPTIVE, colors=128),
-]
-frames[0].save(gif_path, save_all=True, append_images=frames[1:], duration=700, loop=0, disposal=2)
-print("Wrote", gif_path)
+print("Wrote", out_dir + "/frame-draw.png")
 `;
 
 const pyPath = path.join(assetsDir, "_build_logo.py");
