@@ -19,6 +19,9 @@ function getGameServerUrl() {
 
 const ATLAS_COLS = 10;
 const ATLAS_ROWS = [18, 31, 24]; // color, eyes, mouth
+const SPECIAL_ATLAS_COLS = 10;
+/** Нижний ряд special_atlas.gif — хэллоуинские шляпы (skribbl.io) */
+const HALLOWEEN_HAT_INDICES = [96, 97, 98, 99];
 
 let myAvatar = [
   Math.floor(Math.random() * ATLAS_ROWS[0]),
@@ -506,6 +509,22 @@ function setSpriteStyle(element, index, size) {
   element.style.backgroundSize = `${size * ATLAS_COLS}px auto`;
 }
 
+function halloweenHatIndexForPlayer(playerId) {
+  let h = 0;
+  const id = String(playerId || "");
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return HALLOWEEN_HAT_INDICES[Math.abs(h) % HALLOWEEN_HAT_INDICES.length];
+}
+
+function setSpecialHatStyle(element, hatIndex, size) {
+  if (!element) return;
+  const col = hatIndex % SPECIAL_ATLAS_COLS;
+  const row = Math.floor(hatIndex / SPECIAL_ATLAS_COLS);
+  element.style.backgroundImage = "url(special_atlas.gif)";
+  element.style.backgroundPosition = `-${col * size}px -${row * size}px`;
+  element.style.backgroundSize = `${size * SPECIAL_ATLAS_COLS}px auto`;
+}
+
 function updateLoginAvatar() {
   const container = document.getElementById("loginAvatar");
   if (!container) return;
@@ -514,6 +533,7 @@ function updateLoginAvatar() {
   setSpriteStyle(container.querySelector(".color"), myAvatar[0], size);
   setSpriteStyle(container.querySelector(".eyes"), myAvatar[1], size);
   setSpriteStyle(container.querySelector(".mouth"), myAvatar[2], size);
+  setSpecialHatStyle(container.querySelector(".special"), halloweenHatIndexForPlayer(myPlayerId), size);
 }
 
 function initAvatarSprites() {
@@ -1895,7 +1915,8 @@ function updatePlayerList() {
 
       const avHolder = document.createElement("div");
       avHolder.className = "player-avatar-holder";
-      avHolder.innerHTML = '<div class="color"></div><div class="eyes"></div><div class="mouth"></div>';
+      avHolder.innerHTML =
+        '<div class="color"></div><div class="eyes"></div><div class="mouth"></div><div class="special"></div>';
       card.appendChild(avHolder);
 
       const info = document.createElement("div");
@@ -1904,6 +1925,13 @@ function updatePlayerList() {
       info.innerHTML = '<div class="player-name" style="font-weight: bold; font-size: 13px;"></div><div class="player-score" style="font-size: 12px; color: #5cb85c; font-weight: bold;"></div>';
       card.appendChild(info);
       playerList.appendChild(card);
+    }
+
+    const avHolderEl = card.querySelector(".player-avatar-holder");
+    if (avHolderEl && !avHolderEl.querySelector(".special")) {
+      const sp = document.createElement("div");
+      sp.className = "special";
+      avHolderEl.appendChild(sp);
     }
 
     card.style.cssText = `
@@ -1918,6 +1946,7 @@ function updatePlayerList() {
     setSpriteStyle(card.querySelector(".color"), (p.avatar ? p.avatar[0] : 0), 48);
     setSpriteStyle(card.querySelector(".eyes"), (p.avatar ? p.avatar[1] : 0), 48);
     setSpriteStyle(card.querySelector(".mouth"), (p.avatar ? p.avatar[2] : 0), 48);
+    setSpecialHatStyle(card.querySelector(".special"), halloweenHatIndexForPlayer(p.id), 48);
 
     card.querySelector(".player-name").innerHTML = `${escapeHtml(p.name)} ${p.id === gameState.currentDrawerId ? "✏️" : ""}`;
     card.querySelector(".player-score").textContent = `${p.score || 0} очков`;
