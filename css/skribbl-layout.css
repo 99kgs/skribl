@@ -1,0 +1,226 @@
+/* Вернуть раскладку и стиль как у skribbl.io (поверх кастомных правок в index.html) */
+
+body {
+  background: #245195 url(../background.png) repeat !important;
+}
+
+#screenGame .gameHeader {
+  background-color: #eee !important;
+  border-radius: 2px !important;
+  line-height: 48px !important;
+  margin-bottom: 8px !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  flex-wrap: wrap !important;
+}
+
+#round {
+  font-size: 20px !important;
+  font-weight: 700 !important;
+  margin-left: 20px !important;
+}
+
+#currentWord {
+  flex: 1 1 auto !important;
+  font-size: 28px !important;
+  font-weight: 700 !important;
+  letter-spacing: 3px !important;
+  text-align: center !important;
+}
+
+.game-word-stack {
+  letter-spacing: normal !important;
+}
+
+.game-word-stack .word-hint-label {
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  color: #666 !important;
+  text-transform: uppercase !important;
+}
+
+#currentWordText {
+  font-size: 28px !important;
+  letter-spacing: 3px !important;
+}
+
+#buttonSettings {
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  margin-left: auto;
+  margin-right: 8px;
+  background: url(../settings.gif) center center no-repeat;
+  background-size: 32px 32px;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+#buttonSettings:hover {
+  opacity: 1;
+}
+
+.room-link-header-bar:not(.hidden) {
+  display: flex !important;
+  position: absolute;
+  right: 8px;
+  top: 52px;
+  z-index: 1000;
+  background: #fff;
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+#canvasGame {
+  background: #fff;
+  cursor: crosshair;
+}
+
+.gameHeader {
+  position: relative;
+}
+
+#containerGamePlayers .player {
+  background: unset !important;
+  border: none !important;
+  border-radius: 0 !important;
+  margin-bottom: 0 !important;
+  padding: 0 !important;
+}
+
+#containerGamePlayers .player.guessedWord {
+  background: #82c669 !important;
+}
+
+#containerGamePlayers .player.guessedWord:nth-child(2n) {
+  background: #97d87f !important;
+}
+
+#containerGamePlayers .player .avatar {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  position: relative;
+  overflow: visible;
+}
+
+#containerGamePlayers .player .avatar .color,
+#containerGamePlayers .player .avatar .eyes,
+#containerGamePlayers .player .avatar .mouth {
+  position: absolute;
+  inset: 0;
+  background-size: 480px 480px;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
+
+#containerGamePlayers .player .avatar .color {
+  background-image: url(../color_atlas.gif);
+}
+
+#containerGamePlayers .player .avatar .eyes {
+  background-image: url(../eyes_atlas.gif);
+}
+
+#containerGamePlayers .player .avatar .mouth {
+  background-image: url(../mouth_atlas.gif);
+}
+
+#containerGamePlayers .player .avatar .special {
+  position: absolute;
+  width: 166%;
+  height: 166%;
+  left: -33%;
+  top: -33%;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  pointer-events: none;
+  z-index: 2;
+}
+
+#containerGamePlayers .player .avatar .drawing {
+  background-image: url(../pen.gif);
+  background-size: contain;
+  background-repeat: no-repeat;
+  position: absolute;
+  z-index: 2;
+  width: 60%;
+  height: 60%;
+  left: -12.5%;
+  top: -29%;
+}
+
+#containerSidebar,
+#containerChat {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+#boxMessages {
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 2px;
+}
+
+#inputChat {
+  border: 1px solid #ccc !important;
+  border-radius: 2px !important;
+}
+
+.canvas-vote-overlay {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.canvas-vote-overlay .canvas-vote {
+  width: 36px;
+  height: 36px;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  pointer-events: auto;
+  background-color: transparent;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  opacity: 0.92;
+}
+
+.canvas-vote-up {
+  background-image: url(../thumbsup.gif);
+}
+
+.canvas-vote-down {
+  background-image: url(../thumbsdown.gif);
+}
+
+.canvas-vote:hover {
+  transform: scale(1.08);
+}
+
+#canvasReactBar {
+  display: none !important;
+}
+
+.avatar-hat-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #333;
+}
+
+.avatar-hat-row .avatarArrow {
+  cursor: pointer;
+}

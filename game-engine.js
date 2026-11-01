@@ -20,13 +20,15 @@ function getGameServerUrl() {
 const ATLAS_COLS = 10;
 const ATLAS_ROWS = [18, 31, 24]; // color, eyes, mouth
 const SPECIAL_ATLAS_COLS = 10;
-/** Нижний ряд special_atlas.gif — хэллоуинские шляпы (skribbl.io) */
-const HALLOWEEN_HAT_INDICES = [96, 97, 98, 99];
+const SPECIAL_ATLAS_ROWS = 10;
+/** Индексы 96–99 — сезонные; в кастомизации не используем */
+const HAT_INDEX_MAX = 95;
 
 let myAvatar = [
   Math.floor(Math.random() * ATLAS_ROWS[0]),
   Math.floor(Math.random() * ATLAS_ROWS[1]),
-  Math.floor(Math.random() * ATLAS_ROWS[2])
+  Math.floor(Math.random() * ATLAS_ROWS[2]),
+  -1
 ];
 
 const myPlayerId = "p_" + Math.random().toString(36).substring(2, 9);
@@ -458,11 +460,15 @@ function loadSavedProfile() {
       if (nameInput) nameInput.value = String(data.name).slice(0, 20);
       myState.name = nameInput ? nameInput.value.trim() : data.name;
     }
-    if (Array.isArray(data.avatar) && data.avatar.length === 3) {
+    if (Array.isArray(data.avatar) && data.avatar.length >= 3) {
       for (let i = 0; i < 3; i++) {
         const max = ATLAS_ROWS[i] - 1;
         const v = parseInt(data.avatar[i], 10);
         if (!Number.isNaN(v)) myAvatar[i] = Math.max(0, Math.min(max, v));
+      }
+      if (data.avatar.length >= 4) {
+        const h = parseInt(data.avatar[3], 10);
+        myAvatar[3] = Number.isNaN(h) ? -1 : Math.max(-1, Math.min(HAT_INDEX_MAX, h));
       }
       updateLoginAvatar();
     }
@@ -475,7 +481,7 @@ function saveProfile() {
     const name = nameInput ? nameInput.value.trim().slice(0, 20) : myState.name;
     localStorage.setItem(
       PROFILE_STORAGE_KEY,
-      JSON.stringify({ name, avatar: [...myAvatar] })
+      JSON.stringify({ name, avatar: [...myAvatar.slice(0, 3), myAvatar[3] ?? -1] })
     );
   } catch (e) {}
 }
@@ -509,20 +515,28 @@ function setSpriteStyle(element, index, size) {
   element.style.backgroundSize = `${size * ATLAS_COLS}px auto`;
 }
 
-function halloweenHatIndexForPlayer(playerId) {
-  let h = 0;
-  const id = String(playerId || "");
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
-  return HALLOWEEN_HAT_INDICES[Math.abs(h) % HALLOWEEN_HAT_INDICES.length];
+function getHatIndexFromAvatar(avatar) {
+  if (!avatar || avatar.length < 4) return -1;
+  const h = parseInt(avatar[3], 10);
+  if (Number.isNaN(h) || h < 0 || h > HAT_INDEX_MAX) return -1;
+  return h;
 }
 
 function setSpecialHatStyle(element, hatIndex, size) {
   if (!element) return;
+  if (hatIndex < 0) {
+    element.style.backgroundImage = "none";
+    return;
+  }
   const col = hatIndex % SPECIAL_ATLAS_COLS;
   const row = Math.floor(hatIndex / SPECIAL_ATLAS_COLS);
   element.style.backgroundImage = "url(special_atlas.gif)";
   element.style.backgroundPosition = `-${col * size}px -${row * size}px`;
   element.style.backgroundSize = `${size * SPECIAL_ATLAS_COLS}px auto`;
+}
+
+function applyAvatarHatLayer(element, avatar, size) {
+  setSpecialHatStyle(element, getHatIndexFromAvatar(avatar), size);
 }
 
 function updateLoginAvatar() {
@@ -533,7 +547,12 @@ function updateLoginAvatar() {
   setSpriteStyle(container.querySelector(".color"), myAvatar[0], size);
   setSpriteStyle(container.querySelector(".eyes"), myAvatar[1], size);
   setSpriteStyle(container.querySelector(".mouth"), myAvatar[2], size);
-  setSpecialHatStyle(container.querySelector(".special"), halloweenHatIndexForPlayer(myPlayerId), size);
+  setSpecialHatStyle(container.querySelector(".special"), getHatIndexFromAvatar(myAvatar), size);
+  const hatLabel = document.getElementById("loginHatLabel");
+  if (hatLabel) {
+    const h = getHatIndexFromAvatar(myAvatar);
+    hatLabel.textContent = h < 0 ? "Шляпа: нет" : `Шляпа: ${h + 1}`;
+  }
 }
 
 function initAvatarSprites() {
@@ -542,8 +561,13 @@ function initAvatarSprites() {
   document.querySelectorAll("#loginAvatarArrowsLeft .avatarArrowLeft").forEach(arrow => {
     arrow.addEventListener("click", () => {
       const idx = parseInt(arrow.dataset.avatarindex, 10);
-      myAvatar[idx]--;
-      if (myAvatar[idx] < 0) myAvatar[idx] = ATLAS_ROWS[idx] - 1;
+      if (idx === 3) {
+        const h = getHatIndexFromAvatar(myAvatar);
+        myAvatar[3] = h <= -1 ? HAT_INDEX_MAX : h - 1;
+      } else {
+        myAvatar[idx]--;
+        if (myAvatar[idx] < 0) myAvatar[idx] = ATLAS_ROWS[idx] - 1;
+      }
       updateLoginAvatar();
       saveProfile();
     });
@@ -552,8 +576,30 @@ function initAvatarSprites() {
   document.querySelectorAll("#loginAvatarArrowsRight .avatarArrowRight").forEach(arrow => {
     arrow.addEventListener("click", () => {
       const idx = parseInt(arrow.dataset.avatarindex, 10);
-      myAvatar[idx]++;
-      if (myAvatar[idx] >= ATLAS_ROWS[idx]) myAvatar[idx] = 0;
+      if (idx === 3) {
+        const cur = getHatIndexFromAvatar(myAvatar);
+        myAvatar[3] = cur >= HAT_INDEX_MAX ? -1 : cur + 1;
+      } else {
+        myAvatar[idx]++;
+        if (myAvatar[idx] >= ATLAS_ROWS[idx]) myAvatar[idx] = 0;
+      }
+      updateLoginAvatar();
+      saveProfile();
+    });
+  });
+
+  document.querySelectorAll(".avatar-hat-row .avatarArrowLeft").forEach(arrow => {
+    arrow.addEventListener("click", () => {
+      const h = getHatIndexFromAvatar(myAvatar);
+      myAvatar[3] = h <= -1 ? HAT_INDEX_MAX : h - 1;
+      updateLoginAvatar();
+      saveProfile();
+    });
+  });
+  document.querySelectorAll(".avatar-hat-row .avatarArrowRight").forEach(arrow => {
+    arrow.addEventListener("click", () => {
+      const cur = getHatIndexFromAvatar(myAvatar);
+      myAvatar[3] = cur >= HAT_INDEX_MAX ? -1 : cur + 1;
       updateLoginAvatar();
       saveProfile();
     });
@@ -565,6 +611,7 @@ function initAvatarSprites() {
       myAvatar[0] = Math.floor(Math.random() * ATLAS_ROWS[0]);
       myAvatar[1] = Math.floor(Math.random() * ATLAS_ROWS[1]);
       myAvatar[2] = Math.floor(Math.random() * ATLAS_ROWS[2]);
+      myAvatar[3] = -1;
       updateLoginAvatar();
       saveProfile();
     });
@@ -647,6 +694,27 @@ function setupUIEvents() {
   if (formChat) {
     formChat.addEventListener("submit", handleChatSubmit);
   }
+
+  const settingsBtn = document.getElementById("buttonSettings");
+  if (settingsBtn) {
+    settingsBtn.addEventListener("click", () => {
+      const box = document.getElementById("roomInviteBox");
+      if (!box) return;
+      const hidden = box.classList.toggle("hidden");
+      if (!hidden) {
+        const input = document.getElementById("headerInviteLink");
+        if (input) {
+          input.select();
+          navigator.clipboard.writeText(input.value).catch(() => {});
+        }
+      }
+    });
+  }
+
+  const thumbsUp = document.getElementById("btnCanvasThumbsUp");
+  const thumbsDown = document.getElementById("btnCanvasThumbsDown");
+  if (thumbsUp) thumbsUp.addEventListener("click", () => sendCanvasReact("👍"));
+  if (thumbsDown) thumbsDown.addEventListener("click", () => sendCanvasReact("👎"));
 
   document.querySelectorAll(".colorItem").forEach(item => {
     item.addEventListener("click", () => {
@@ -739,7 +807,7 @@ function enterGameSession() {
   const chosenName = (nameInput && nameInput.value.trim()) ? nameInput.value.trim() : ("Игрок " + Math.floor(Math.random() * 900 + 100));
 
   myState.name = chosenName;
-  myState.avatar = [...myAvatar];
+  myState.avatar = [myAvatar[0], myAvatar[1], myAvatar[2], myAvatar[3] ?? -1];
   saveProfile();
 
   const screenLogin = document.getElementById("screenLogin");
@@ -998,6 +1066,13 @@ function handleIncomingPacket(packet) {
         } else {
           merged.hasGuessed = !!(prev.hasGuessed || p.hasGuessed);
         }
+        if (Array.isArray(p.avatar) && p.avatar.length >= 3) {
+          merged.avatar = p.avatar.slice(0, 4);
+        } else if (prev.avatar) {
+          merged.avatar = prev.avatar;
+        }
+      } else if (Array.isArray(p.avatar)) {
+        merged.avatar = p.avatar.slice(0, 4);
       }
       gameState.players[p.id] = merged;
 
@@ -1888,8 +1963,28 @@ function clearCanvasLocal() {
 function getPlayerListSignature() {
   return getPlayersList()
     .sort((a, b) => a.id.localeCompare(b.id))
-    .map(p => `${p.id}:${p.score || 0}:${p.hasGuessed ? 1 : 0}:${p.id === gameState.currentDrawerId ? 1 : 0}`)
+    .map(p => {
+      const av = p.avatar || [];
+      return `${p.id}:${p.score || 0}:${p.hasGuessed ? 1 : 0}:${p.id === gameState.currentDrawerId ? 1 : 0}:${av.join(",")}`;
+    })
     .join("|");
+}
+
+function ensurePlayerCardStructure(card) {
+  if (card.querySelector(".rank")) return;
+  card.innerHTML = `
+    <div class="rank">#1</div>
+    <div class="avatar avatar-fit">
+      <div class="color"></div>
+      <div class="eyes"></div>
+      <div class="mouth"></div>
+      <div class="special"></div>
+    </div>
+    <div class="info">
+      <div class="name"></div>
+      <div class="score"></div>
+    </div>
+  `;
 }
 
 function updatePlayerList() {
@@ -1903,53 +1998,46 @@ function updatePlayerList() {
   const existingIds = new Set();
   playerList.querySelectorAll(".player[data-player-id]").forEach(el => existingIds.add(el.dataset.playerId));
 
-  const list = getPlayersList();
+  const list = getPlayersList().sort(
+    (a, b) => (b.score || 0) - (a.score || 0) || a.id.localeCompare(b.id)
+  );
   const nextIds = new Set(list.map(p => p.id));
 
-  list.forEach(p => {
+  list.forEach((p, rankIndex) => {
     let card = playerList.querySelector(`.player[data-player-id="${p.id}"]`);
     if (!card) {
       card = document.createElement("div");
       card.className = "player";
       card.dataset.playerId = p.id;
-
-      const avHolder = document.createElement("div");
-      avHolder.className = "player-avatar-holder";
-      avHolder.innerHTML =
-        '<div class="color"></div><div class="eyes"></div><div class="mouth"></div><div class="special"></div>';
-      card.appendChild(avHolder);
-
-      const info = document.createElement("div");
-      info.className = "player-info";
-      info.style.cssText = "margin-left: 8px; flex: 1; line-height: 1.2;";
-      info.innerHTML = '<div class="player-name" style="font-weight: bold; font-size: 13px;"></div><div class="player-score" style="font-size: 12px; color: #5cb85c; font-weight: bold;"></div>';
-      card.appendChild(info);
       playerList.appendChild(card);
     }
 
-    const avHolderEl = card.querySelector(".player-avatar-holder");
-    if (avHolderEl && !avHolderEl.querySelector(".special")) {
-      const sp = document.createElement("div");
-      sp.className = "special";
-      avHolderEl.appendChild(sp);
+    ensurePlayerCardStructure(card);
+
+    card.classList.toggle("guessedWord", !!p.hasGuessed);
+
+    const avatarEl = card.querySelector(".avatar");
+    let drawingEl = avatarEl.querySelector(".drawing");
+    if (p.id === gameState.currentDrawerId) {
+      if (!drawingEl) {
+        drawingEl = document.createElement("div");
+        drawingEl.className = "drawing";
+        avatarEl.appendChild(drawingEl);
+      }
+    } else if (drawingEl) {
+      drawingEl.remove();
     }
 
-    card.style.cssText = `
-      display: flex !important;
-      align-items: center !important;
-      padding: 6px 8px !important;
-      background: ${p.hasGuessed ? "#dff0d8" : (p.id === gameState.currentDrawerId ? "#d9edf7" : "#f5f5f5")};
-      border-left: 4px solid ${p.hasGuessed ? "#3c763d" : "#337ab7"};
-      border-radius: 4px;
-    `;
+    const avSize = 48;
+    setSpriteStyle(card.querySelector(".color"), p.avatar ? p.avatar[0] : 0, avSize);
+    setSpriteStyle(card.querySelector(".eyes"), p.avatar ? p.avatar[1] : 0, avSize);
+    setSpriteStyle(card.querySelector(".mouth"), p.avatar ? p.avatar[2] : 0, avSize);
+    applyAvatarHatLayer(card.querySelector(".special"), p.avatar, avSize);
 
-    setSpriteStyle(card.querySelector(".color"), (p.avatar ? p.avatar[0] : 0), 48);
-    setSpriteStyle(card.querySelector(".eyes"), (p.avatar ? p.avatar[1] : 0), 48);
-    setSpriteStyle(card.querySelector(".mouth"), (p.avatar ? p.avatar[2] : 0), 48);
-    setSpecialHatStyle(card.querySelector(".special"), halloweenHatIndexForPlayer(p.id), 48);
-
-    card.querySelector(".player-name").innerHTML = `${escapeHtml(p.name)} ${p.id === gameState.currentDrawerId ? "✏️" : ""}`;
-    card.querySelector(".player-score").textContent = `${p.score || 0} очков`;
+    card.querySelector(".rank").textContent = `#${rankIndex + 1}`;
+    const youSuffix = p.id === myPlayerId ? " (You)" : "";
+    card.querySelector(".name").textContent = `${p.name}${youSuffix}`;
+    card.querySelector(".score").textContent = `${p.score || 0} points`;
   });
 
   existingIds.forEach(id => {
@@ -1957,6 +2045,11 @@ function updatePlayerList() {
       const el = playerList.querySelector(`.player[data-player-id="${id}"]`);
       if (el) el.remove();
     }
+  });
+
+  list.forEach(p => {
+    const card = playerList.querySelector(`.player[data-player-id="${p.id}"]`);
+    if (card) playerList.appendChild(card);
   });
 }
 
@@ -1980,7 +2073,7 @@ function updateTimerDisplay() {
 function updateGameHeader() {
   updateTimerDisplay();
   const roundEl = document.getElementById("round");
-  if (roundEl) roundEl.textContent = `Раунд ${gameState.round} из ${gameState.maxRounds}`;
+  if (roundEl) roundEl.textContent = `Round ${gameState.round} of ${gameState.maxRounds}`;
 
   const wordRoot = document.getElementById("currentWord");
   const wordTextEl = document.getElementById("currentWordText");
@@ -2002,7 +2095,7 @@ function updateGameHeader() {
     hideWordChoices();
     const len = gameState.currentWord ? gameState.currentWord.length : 0;
     if (isDrawer) {
-      setBanner("Нарисуй", (gameState.currentWord || "").toUpperCase(), "word-drawer-mode");
+      setBanner("Draw", (gameState.currentWord || "").toUpperCase(), "word-drawer-mode");
     } else if (len > 0) {
       const hintText = formatWordForGuessers(
         gameState.currentWord,
@@ -2011,8 +2104,8 @@ function updateGameHeader() {
       );
       const label =
         gameState.hintRevealCount > 0
-          ? `Подсказка (${gameState.hintRevealCount} ${letterWord(gameState.hintRevealCount)})`
-          : "Угадай";
+          ? `Hint (${gameState.hintRevealCount})`
+          : "Guess this";
       setBanner(label, hintText, "word-hint-mode");
     } else {
       setBanner("Угадай", "_ _ _ _", "word-hint-mode");

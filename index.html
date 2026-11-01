@@ -5,8 +5,8 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <!-- SKRIBBL_BUILD:a085e6d -->
-  <meta name="skribbl-build" content="a085e6d">
+  <!-- SKRIBBL_BUILD:c3c84e3 -->
+  <meta name="skribbl-build" content="c3c84e3">
   <script>
     (function (w) {
       var meta = document.querySelector('meta[name="skribbl-build"]');
@@ -36,6 +36,14 @@
     (function () {
       var link = document.getElementById("skribbl-main-css");
       if (link && window.skribblAssetUrl) link.href = skribblAssetUrl("main.css");
+    })();
+  </script>
+
+  <link href="css/skribbl-layout.css" rel="stylesheet" id="skribbl-layout-css">
+  <script>
+    (function () {
+      var link = document.getElementById("skribbl-layout-css");
+      if (link && window.skribblAssetUrl) link.href = skribblAssetUrl("css/skribbl-layout.css");
     })();
   </script>
 
@@ -563,7 +571,7 @@
     }
   </style>
 </head>
-<body oncontextmenu="return false;" style="background-color:#245195; margin:0; padding:0;">
+<body oncontextmenu="return false;">
 
   <div class="container-fluid" style="max-width:1400px; padding:0 4px;">
     
@@ -610,6 +618,12 @@
                 <div class="avatarArrow avatarArrowRight" data-avatarindex="2"></div>
                 <div class="avatarArrow avatarArrowRight" data-avatarindex="0"></div>
               </div>
+
+              <div class="avatar-hat-row">
+                <div class="avatarArrow avatarArrowLeft" data-avatarindex="3"></div>
+                <span id="loginHatLabel">Шляпа: нет</span>
+                <div class="avatarArrow avatarArrowRight" data-avatarindex="3"></div>
+              </div>
             </div>
 
             <button class="btn btn-success btn-lg btn-block" id="btnPlayGame" style="margin-top:12px; font-weight:bold; font-size:20px;" type="button">
@@ -624,19 +638,20 @@
     <!-- ИГРОВОЙ ЭКРАН -->
     <div id="screenGame" style="display:none;">
       
-      <div class="gameHeader" style="display:flex; align-items:center;">
+      <div class="gameHeader">
         <div class="timer-container">
           <div id="timer">60</div>
         </div>
-        <div id="round">Раунд 1 из 3</div>
+        <div id="round">Round 1 of 3</div>
         <div id="currentWord" class="game-word-stack">
-          <span class="word-hint-label" id="wordHintLabel">Ожидание</span>
+          <span class="word-hint-label" id="wordHintLabel">Waiting</span>
           <span id="currentWordText">...</span>
         </div>
+        <div id="buttonSettings" title="Room link &amp; settings"></div>
 
-        <div class="room-link-header-bar" id="roomInviteBox">
+        <div class="room-link-header-bar hidden" id="roomInviteBox" aria-hidden="true">
           <input type="text" readonly id="headerInviteLink">
-          <button type="button" class="btn-copy-sm" id="btnCopyRoomLink">Скопировать</button>
+          <button type="button" class="btn-copy-sm" id="btnCopyRoomLink">Copy</button>
         </div>
       </div>
 
@@ -648,8 +663,12 @@
 
         <div id="containerBoard" class="board-column">
           <div id="containerCanvas" style="position:relative;">
-            <canvas id="canvasGame" width="800" height="600" style="background:#ffffff; cursor:crosshair;"></canvas>
+            <canvas id="canvasGame" width="800" height="600"></canvas>
             <div id="canvasReactLayer" aria-hidden="true"></div>
+            <div class="canvas-vote-overlay" id="canvasVoteOverlay">
+              <button type="button" class="canvas-vote canvas-vote-up" id="btnCanvasThumbsUp" title="Like"></button>
+              <button type="button" class="canvas-vote canvas-vote-down" id="btnCanvasThumbsDown" title="Dislike"></button>
+            </div>
             
             <div id="word-select-modal" class="hidden">
               <div class="modal-box">
@@ -727,7 +746,7 @@
             <div id="boxChatInput">
               <div id="canvasReactBar" class="canvas-react-bar hidden" title="Реакция на рисунок (не в чат)"></div>
               <form id="formChat" class="chat-input-row" action="javascript:void(0);">
-                <input class="form-control" id="inputChat" autocomplete="off" type="text" placeholder="Введите догадку или сообщение...">
+                <input class="form-control" id="inputChat" autocomplete="off" type="text" placeholder="Type your guess here...">
               </form>
             </div>
           </div>
