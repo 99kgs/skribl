@@ -86,10 +86,87 @@ let gameState = {
   hintLetterIndices: [],
   drawRoundSeconds: DRAW_ROUND_SECONDS,
   /** Меняется каждый раунд рисования — защита от устаревших пакетов */
-  drawingEpoch: 0
+  drawingEpoch: 0,
+  /** Сколько уже угадали в текущем раунде (только у хоста) */
+  guessesThisRound: 0
 };
 
-let roundTimerInterval = null;
+let isShapeDragging = false;
+let shapeStart = null;
+let shapeEnd = null;
+let shapeBaseSnapshot = null;
+
+function isShapeTool(tool) {
+  return tool === "line" || tool === "rect" || tool === "circle";
+}
+
+/** Очки: быстрее и раньше в очереди — больше (удобно для Discord-тусовки). */
+function computeGuessPoints(timeLeft, guessRank) {
+  const t = Math.max(0, timeLeft);
+  const timePart = Math.floor(t * 9);
+  const rankBonus = guessRank === 0 ? 45 : guessRank === 1 ? 25 : guessRank === 2 ? 12 : 0;
+  return Math.max(20, timePart + rankBonus);
+}
+
+function guessRankLabel(guessRank) {
+  if (guessRank === 0) return " 🥇 первый";
+  if (guessRank === 1) return " 🥈";
+  if (guessRank === 2) return " 🥉";
+  return "";
+}
+
+function drawShapeToCanvas(tool, x1, y1, x2, y2, color, size) {
+  if (!ctx) return;
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = size;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  if (tool === "line") {
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  } else if (tool === "rect") {
+    const left = Math.min(x1, x2);
+    const top = Math.min(y1, y2);
+    ctx.strokeRect(left, top, Math.abs(x2 - x1) || 1, Math.abs(y2 - y1) || 1);
+  } else if (tool === "circle") {
+    const cx = (x1 + x2) / 2;
+    const cy = (y1 + y2) / 2;
+    const rx = Math.max(1, Math.abs(x2 - x1) / 2);
+    const ry = Math.max(1, Math.abs(y2 - y1) / 2);
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.closePath();
+}
+
+function broadcastDrawShape(tool, x1, y1, x2, y2, color, size) {
+  if (!canvas) return;
+  broadcastPacket({
+    type: "DRAW_SHAPE",
+    tool,
+    color,
+    size,
+    x1: x1 / canvas.width,
+    y1: y1 / canvas.height,
+    x2: x2 / canvas.width,
+    y2: y2 / canvas.height
+  });
+}
+
+function applyRemoteDrawShape(packet) {
+  if (!ctx || !canvas) return;
+  drawShapeToCanvas(
+    packet.tool,
+    packet.x1 * canvas.width,
+    packet.y1 * canvas.height,
+    packet.x2 * canvas.width,
+    packet.y2 * canvas.height,
+    packet.color,
+    packet.size
+  );
+}
 
 function isPacketFromStateLeader(packet) {
   const leaderId = getStateLeaderId(gameState.players);
@@ -253,7 +330,6 @@ function loadSavedProfile() {
       updateLoginAvatar();
     }
   } catch (e) {}
-  if (typeof refreshAdminPanel === "function") refreshAdminPanel();
 }
 
 function saveProfile() {
@@ -491,6 +567,17 @@ function setupUIEvents() {
     canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
     window.addEventListener("touchend", stopDrawing);
   }
+
+  window.addEventListener("keydown", (e) => {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+    if (gameState.currentDrawerId !== myPlayerId || gameState.status !== "DRAWING") return;
+    const k = e.key.toLowerCase();
+    if (k === "b") setActiveTool("pen");
+    else if (k === "l") setActiveTool("line");
+    else if (k === "r") setActiveTool("rect");
+    else if (k === "o") setActiveTool("circle");
+    else if (k === "f") setActiveTool("fill");
+  });
 }
 
 function enterGameSession() {
@@ -517,7 +604,6 @@ function enterGameSession() {
   };
   updatePlayerList();
   updateGameHeader();
-  if (typeof refreshAdminPanel === "function") refreshAdminPanel();
   requestAnimationFrame(syncGamePanelHeights);
 
   initNetworkConnection();
@@ -871,6 +957,13 @@ function handleIncomingPacket(packet) {
       break;
     }
 
+    case "DRAW_SHAPE": {
+      if (gameState.currentDrawerId === myPlayerId) break;
+      if (packet.senderId !== gameState.currentDrawerId) break;
+      applyRemoteDrawShape(packet);
+      break;
+    }
+
     case "CLEAR": {
       clearCanvasLocal();
       resetRemoteDrawSync();
@@ -925,13 +1018,6 @@ function handleIncomingPacket(packet) {
         break;
       }
       addChatMessage(packet.senderName, packet.text, mt, packet.audience);
-      break;
-    }
-
-    case "ADMIN_CMD": {
-      if (!isRoomLeader()) break;
-      if (!canExecuteAdminCmd(packet)) break;
-      executeAdminCommand(packet.action, packet.payload || {}, packet.senderId);
       break;
     }
 
@@ -1091,9 +1177,10 @@ function startDrawingRound(word) {
   gameState.hintRevealCount = 0;
   gameState.hintLetterIndices = pickHintLetterIndices(gameState.currentWord, 2);
   gameState.drawingEpoch = (gameState.drawingEpoch || 0) + 1;
+  gameState.guessesThisRound = 0;
 
   const wLen = gameState.currentWord.length;
-  broadcastChatMessage("Игра", `Раунд начался! Слово из ${wLen} ${letterWord(wLen)} — рисуй и угадывай.`, "system");
+  broadcastChatMessage("Игра", `Раунд начался! Слово из ${wLen} ${letterWord(wLen)}. Раньше угадал — больше очков.`, "system");
   syncStateToAll();
   pulseWordBanner();
   startCanvasSnapshotLoop();
@@ -1166,7 +1253,9 @@ function processIncomingGuess(playerId, rawText) {
 
   if (text === targetWord) {
     player.hasGuessed = true;
-    const earned = Math.max(50, gameState.timeLeft * 10);
+    const guessRank = gameState.guessesThisRound || 0;
+    gameState.guessesThisRound = guessRank + 1;
+    const earned = computeGuessPoints(gameState.timeLeft, guessRank);
     player.score = (player.score || 0) + earned;
 
     const drawer = gameState.players[gameState.currentDrawerId];
@@ -1177,7 +1266,7 @@ function processIncomingGuess(playerId, rawText) {
     broadcastChatMessage(player.name, rawText, "normal");
     broadcastChatMessage(
       "Игра",
-      `${player.name} угадал слово «${rawText.trim()}» (+${earned} очков)!`,
+      `${player.name} угадал «${rawText.trim()}» (+${earned}${guessRankLabel(guessRank)})!`,
       "correct"
     );
     playGameSound("guessed", 0.35);
@@ -1208,73 +1297,6 @@ function processIncomingGuess(playerId, rawText) {
   }
 
   broadcastChatMessage(player.name, rawText, "normal");
-}
-
-function canExecuteAdminCmd(packet) {
-  const sender = gameState.players[packet.senderId];
-  if (!sender) return false;
-  if (typeof isAdminPlayerName === "function" && isAdminPlayerName(sender.name)) return true;
-  if (packet.senderId === myPlayerId && typeof isSiteAdmin === "function" && isSiteAdmin()) {
-    return true;
-  }
-  return false;
-}
-
-function executeAdminCommand(action, payload, senderId) {
-  const adminName = gameState.players[senderId]?.name || "Админ";
-  switch (action) {
-    case "kick": {
-      const id = payload.playerId;
-      if (!id || id === myPlayerId || !gameState.players[id]) break;
-      const name = gameState.players[id].name;
-      delete gameState.players[id];
-      broadcastPacket({ type: "PLAYER_LEAVE", playerId: id });
-      broadcastChatMessage("Админ", `${name} удалён из комнаты.`, "system");
-      lastPlayerListSignature = "";
-      updatePlayerList();
-      syncStateToAll();
-      break;
-    }
-    case "end_round": {
-      if (gameState.status === "DRAWING") {
-        broadcastChatMessage("Админ", "Раунд завершён администратором.", "system");
-        endTurnTimeUp();
-      }
-      break;
-    }
-    case "next_turn": {
-      if (gameState.status === "DRAWING" || gameState.status === "TURN_END") {
-        clearInterval(roundTimerInterval);
-        roundTimerInterval = null;
-        gameState.status = "TURN_END";
-        startNextTurn();
-      } else if (gameState.status === "CHOOSING") {
-        startNextTurn();
-      }
-      broadcastChatMessage("Админ", `${adminName} пропустил ход.`, "system");
-      break;
-    }
-    case "reset_scores": {
-      getPlayersList().forEach(p => { p.score = 0; });
-      broadcastChatMessage("Админ", "Очки обнулены.", "system");
-      syncStateToAll();
-      break;
-    }
-    case "set_word": {
-      const word = String(payload.word || "").trim().toLowerCase();
-      if (!word || gameState.status !== "DRAWING") break;
-      gameState.currentWord = word.replace(/ё/g, "е");
-      resetRoundHints();
-      gameState.hintLetterIndices = pickHintLetterIndices(gameState.currentWord, 2);
-      broadcastChatMessage("Админ", `Слово раунда: «${gameState.currentWord}»`, "system");
-      syncStateToAll();
-      pulseWordBanner();
-      break;
-    }
-    default:
-      break;
-  }
-  if (typeof refreshAdminPanel === "function") refreshAdminPanel();
 }
 
 function endTurnTimeUp() {
@@ -1489,6 +1511,20 @@ function startDrawing(e) {
     return;
   }
 
+  if (isShapeTool(currentTool) && !isRightErase) {
+    const coords = getCoords(e);
+    pushUndoSnapshot();
+    try {
+      shapeBaseSnapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    } catch (err) {
+      shapeBaseSnapshot = null;
+    }
+    shapeStart = { x: coords.x, y: coords.y };
+    shapeEnd = { x: coords.x, y: coords.y };
+    isShapeDragging = true;
+    return;
+  }
+
   if (!isFreehandDrawMode()) return;
 
   isDrawing = true;
@@ -1499,8 +1535,27 @@ function startDrawing(e) {
 }
 
 function draw(e) {
-  if (!isDrawing || gameState.currentDrawerId !== myPlayerId || gameState.status !== "DRAWING") return;
-  if (!isFreehandDrawMode()) return;
+  if (gameState.currentDrawerId !== myPlayerId || gameState.status !== "DRAWING") return;
+
+  if (isShapeDragging && shapeStart) {
+    const coords = getCoords(e);
+    shapeEnd = { x: coords.x, y: coords.y };
+    if (shapeBaseSnapshot) {
+      ctx.putImageData(shapeBaseSnapshot, 0, 0);
+    }
+    drawShapeToCanvas(
+      currentTool,
+      shapeStart.x,
+      shapeStart.y,
+      shapeEnd.x,
+      shapeEnd.y,
+      strokeColorForDraw(),
+      currentBrushSize
+    );
+    return;
+  }
+
+  if (!isDrawing || !isFreehandDrawMode()) return;
   const coords = getCoords(e);
   const color = strokeColorForDraw();
 
@@ -1623,6 +1678,37 @@ function applyRemoteStroke(prevX, prevY, currX, currY, color, size) {
 }
 
 function stopDrawing() {
+  if (isShapeDragging && shapeStart && shapeEnd) {
+    const color = strokeColorForDraw();
+    if (shapeBaseSnapshot) {
+      ctx.putImageData(shapeBaseSnapshot, 0, 0);
+    }
+    drawShapeToCanvas(
+      currentTool,
+      shapeStart.x,
+      shapeStart.y,
+      shapeEnd.x,
+      shapeEnd.y,
+      color,
+      currentBrushSize
+    );
+    broadcastDrawShape(
+      currentTool,
+      shapeStart.x,
+      shapeStart.y,
+      shapeEnd.x,
+      shapeEnd.y,
+      color,
+      currentBrushSize
+    );
+    broadcastCanvasAfterEdit();
+    isShapeDragging = false;
+    shapeStart = null;
+    shapeEnd = null;
+    shapeBaseSnapshot = null;
+    return;
+  }
+
   if (isDrawing && pendingDrawPoints.length) {
     flushDrawBroadcast();
   }
