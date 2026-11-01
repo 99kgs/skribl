@@ -88,8 +88,7 @@ let gameState = {
   /** Меняется каждый раунд рисования — защита от устаревших пакетов */
   drawingEpoch: 0,
   /** Сколько уже угадали в текущем раунде (только у хоста) */
-  guessesThisRound: 0,
-  skipWordVotes: {}
+  guessesThisRound: 0
 };
 
 let isShapeDragging = false;
@@ -121,48 +120,6 @@ function rotateDrawerToNext() {
   gameState.currentDrawerId = players[nextIndex].id;
 }
 
-function getSkipVotesRequired() {
-  const guessers = getPlayersList().filter(p => p.id !== gameState.currentDrawerId);
-  if (guessers.length <= 0) return 1;
-  return Math.max(1, Math.ceil(guessers.length / 2));
-}
-
-function resetSkipWordVotes() {
-  gameState.skipWordVotes = {};
-  updateSkipWordVoteUi(0, getSkipVotesRequired(), false);
-}
-
-function broadcastSkipWordState() {
-  const votes = gameState.skipWordVotes || {};
-  const count = Object.keys(votes).length;
-  const needed = getSkipVotesRequired();
-  broadcastPacket({
-    type: "SKIP_WORD_STATE",
-    count,
-    needed,
-    voterIds: Object.keys(votes)
-  });
-  updateSkipWordVoteUi(count, needed, !!votes[myPlayerId]);
-}
-
-function updateSkipWordVoteUi(count, needed, iVoted) {
-  const btn = document.getElementById("btnSkipWordVote");
-  if (!btn) return;
-  const isDrawer = gameState.currentDrawerId === myPlayerId;
-  const show = gameState.status === "DRAWING" && !isDrawer;
-  btn.classList.toggle("hidden", !show);
-  if (!show) return;
-  if (typeof count !== "number") {
-    count = Object.keys(gameState.skipWordVotes || {}).length;
-    needed = getSkipVotesRequired();
-    iVoted = !!(gameState.skipWordVotes && gameState.skipWordVotes[myPlayerId]);
-  }
-  btn.textContent = iVoted
-    ? `Отменить голос (${count}/${needed})`
-    : `Сменить рисующего (${count}/${needed})`;
-  btn.classList.toggle("skip-word-active", !!iVoted);
-}
-
 function beginChoosingPhase() {
   const choices = pickRandomWordChoices();
   pendingWordChoices = choices.slice();
@@ -170,7 +127,8 @@ function beginChoosingPhase() {
   gameState.status = "CHOOSING";
   gameState.currentWord = "";
   resetRoundHints();
-  resetSkipWordVotes();
+  awaitingWordChoiceAck = false;
+  displayedWordChoicesKey = "";
   gameState.timeLeft = 15;
   drawStrokeSeq = 0;
   stopCanvasSnapshotLoop();
@@ -219,50 +177,6 @@ function beginChoosingPhase() {
   }, 1000);
 }
 
-function transferDrawAfterSkipVote() {
-  if (gameState.status !== "DRAWING") return;
-  const oldWord = (gameState.currentWord || "").toUpperCase();
-  const oldDrawerName = gameState.players[gameState.currentDrawerId]?.name || "Игрок";
-
-  clearInterval(roundTimerInterval);
-  roundTimerInterval = null;
-  stopCanvasSnapshotLoop();
-
-  getPlayersList().forEach(p => {
-    p.hasGuessed = false;
-  });
-  clearGuessedChatMessages();
-  gameState.guessesThisRound = 0;
-
-  rotateDrawerToNext();
-  const newDrawerName = gameState.players[gameState.currentDrawerId]?.name || "Игрок";
-  broadcastChatMessage(
-    "Игра",
-    `Голос «сменить слово» (${oldWord}). Рисует ${newDrawerName}.`,
-    "system"
-  );
-
-  beginChoosingPhase();
-}
-
-function processSkipWordVote(playerId, wantSkip) {
-  if (gameState.status !== "DRAWING") return;
-  if (playerId === gameState.currentDrawerId) return;
-  if (!gameState.players[playerId]) return;
-
-  if (!gameState.skipWordVotes) gameState.skipWordVotes = {};
-  if (wantSkip) gameState.skipWordVotes[playerId] = true;
-  else delete gameState.skipWordVotes[playerId];
-
-  const count = Object.keys(gameState.skipWordVotes).length;
-  const needed = getSkipVotesRequired();
-  broadcastSkipWordState();
-
-  if (count >= needed) {
-    transferDrawAfterSkipVote();
-  }
-}
-
 function sendCanvasReact(emoji) {
   if (!CANVAS_REACT_EMOJIS.includes(emoji)) return;
   if (gameState.status !== "DRAWING") return;
@@ -304,24 +218,6 @@ function setupCanvasReactBar() {
     b.addEventListener("click", () => sendCanvasReact(emoji));
     bar.appendChild(b);
   });
-
-  const skipBtn = document.getElementById("btnSkipWordVote");
-  if (skipBtn && !skipBtn.dataset.wired) {
-    skipBtn.dataset.wired = "1";
-    skipBtn.addEventListener("click", () => {
-      if (gameState.currentDrawerId === myPlayerId) return;
-      if (gameState.status !== "DRAWING") return;
-      const voted = !!(gameState.skipWordVotes && gameState.skipWordVotes[myPlayerId]);
-      if (isRoomLeader()) {
-        processSkipWordVote(myPlayerId, !voted);
-      } else {
-        broadcastPacket({
-          type: "SKIP_WORD_VOTE",
-          active: !voted
-        });
-      }
-    });
-  }
 }
 
 function isShapeTool(tool) {
@@ -486,6 +382,9 @@ let canvasSnapshotTimer = null;
 let lastSnapshotSentAt = 0;
 let lastPlayerListSignature = "";
 let pendingWordChoices = [];
+/** Рисующий отправил WORD_CHOSEN, ждём SYNC от лидера — не перерисовывать модалку по таймеру */
+let awaitingWordChoiceAck = false;
+let displayedWordChoicesKey = "";
 let currentTool = "pen";
 /** ПКМ: временное стирание без смены выбранного инструмента */
 let isRightErase = false;
@@ -1142,8 +1041,9 @@ function handleIncomingPacket(packet) {
       updatePlayerList();
       updateGameHeader();
       if (packet.state.status === "DRAWING") {
+        awaitingWordChoiceAck = false;
         hideWordChoices();
-      } else if (packet.state.status === "CHOOSING" && gameState.currentDrawerId === myPlayerId && pendingWordChoices.length) {
+      } else if (packet.state.status === "CHOOSING" && gameState.currentDrawerId === myPlayerId && pendingWordChoices.length && !awaitingWordChoiceAck) {
         showWordChoices(pendingWordChoices);
       }
       break;
@@ -1193,24 +1093,6 @@ function handleIncomingPacket(packet) {
       break;
     }
 
-    case "SKIP_WORD_VOTE": {
-      if (isRoomLeader()) {
-        processSkipWordVote(packet.senderId, packet.active !== false);
-      }
-      break;
-    }
-
-    case "SKIP_WORD_STATE": {
-      const leaderId = getStateLeaderId(gameState.players);
-      if (packet.senderId !== leaderId) break;
-      gameState.skipWordVotes = {};
-      (packet.voterIds || []).forEach(id => {
-        gameState.skipWordVotes[id] = true;
-      });
-      updateSkipWordVoteUi(packet.count, packet.needed, !!gameState.skipWordVotes[myPlayerId]);
-      break;
-    }
-
     case "CANVAS_REACT": {
       if (packet.senderId === myPlayerId) break;
       showFloatingCanvasReact(packet.emoji || "👍", packet.senderName || "Игрок");
@@ -1233,6 +1115,8 @@ function handleIncomingPacket(packet) {
     case "WORD_CHOICES": {
       if (packet.targetId === myPlayerId) {
         pendingWordChoices = packet.choices || [];
+        awaitingWordChoiceAck = false;
+        displayedWordChoicesKey = "";
         showWordChoices(pendingWordChoices);
       } else {
         hideWordChoices();
@@ -1252,9 +1136,12 @@ function handleIncomingPacket(packet) {
     }
 
     case "WORD_CHOSEN": {
-      if (isRoomLeader()) {
-        startDrawingRound(packet.word);
-      }
+      if (!isRoomLeader()) break;
+      if (gameState.status !== "CHOOSING") break;
+      if (packet.senderId !== gameState.currentDrawerId) break;
+      const chosen = String(packet.word || "").toLowerCase();
+      if (pendingWordChoices.length && !pendingWordChoices.includes(chosen)) break;
+      startDrawingRound(chosen || pendingWordChoices[0]);
       break;
     }
 
@@ -1368,7 +1255,8 @@ function startDrawingRound(word) {
   gameState.hintLetterIndices = pickHintLetterIndices(gameState.currentWord, 2);
   gameState.drawingEpoch = (gameState.drawingEpoch || 0) + 1;
   gameState.guessesThisRound = 0;
-  resetSkipWordVotes();
+  awaitingWordChoiceAck = false;
+  displayedWordChoicesKey = "";
 
   const wLen = gameState.currentWord.length;
   broadcastChatMessage("Игра", `Раунд начался! Слово из ${wLen} ${letterWord(wLen)}. Раньше угадал — больше очков.`, "system");
@@ -2072,7 +1960,7 @@ function updateGameHeader() {
     }
   } else if (gameState.status === "CHOOSING") {
     setBanner("Раунд", "ВЫБОР СЛОВА…", null);
-    if (isDrawer && pendingWordChoices.length) {
+    if (isDrawer && pendingWordChoices.length && !awaitingWordChoiceAck) {
       showWordChoices(pendingWordChoices);
     }
   } else if (gameState.status === "TURN_END" && gameState.currentWord) {
@@ -2087,7 +1975,12 @@ function updateGameHeader() {
     toolbar.style.display = showBar ? "flex" : "none";
   }
 
-  if (gameState.status === "CHOOSING" && gameState.currentDrawerId === myPlayerId && !pendingWordChoices.length) {
+  if (
+    gameState.status === "CHOOSING" &&
+    gameState.currentDrawerId === myPlayerId &&
+    !pendingWordChoices.length &&
+    !awaitingWordChoiceAck
+  ) {
     const now = Date.now();
     if (now - lastWordChoicesRequestAt > 2500) {
       lastWordChoicesRequestAt = now;
@@ -2103,8 +1996,6 @@ function updateGameHeader() {
     const showReact = gameState.status === "DRAWING" && !isDrawer;
     reactBar.classList.toggle("hidden", !showReact);
   }
-  updateSkipWordVoteUi();
-
   if (gameState.currentDrawerId !== myPlayerId) {
     hideWordChoices();
   }
@@ -2123,6 +2014,13 @@ function showWordChoices(words) {
   }
   const modal = document.getElementById("word-select-modal");
   const cont = document.getElementById("word-select-options");
+  if (!modal || !cont) return;
+
+  const key = words.join("\0");
+  if (!modal.classList.contains("hidden") && displayedWordChoicesKey === key) {
+    return;
+  }
+  displayedWordChoicesKey = key;
   cont.innerHTML = "";
 
   words.forEach(w => {
@@ -2130,6 +2028,7 @@ function showWordChoices(words) {
     btn.className = "word-btn-opt";
     btn.textContent = w;
     btn.onclick = () => {
+      awaitingWordChoiceAck = true;
       hideWordChoices();
       if (isRoomLeader()) {
         startDrawingRound(w);

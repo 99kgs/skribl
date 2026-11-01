@@ -5,8 +5,8 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <!-- SKRIBBL_BUILD:fb3222a -->
-  <meta name="skribbl-build" content="fb3222a">
+  <!-- SKRIBBL_BUILD:a6cd08c -->
+  <meta name="skribbl-build" content="a6cd08c">
   <script>
     (function (w) {
       var meta = document.querySelector('meta[name="skribbl-build"]');
@@ -360,24 +360,6 @@
       cursor: pointer;
     }
     .canvas-react-btn:hover { background: #f0f7ff; transform: scale(1.08); }
-    .skip-word-btn {
-      display: block;
-      width: calc(100% - 16px);
-      margin: 6px 8px 0;
-      padding: 7px 10px;
-      font-size: 12px;
-      font-weight: 700;
-      border: 1px solid #cbd5e1;
-      border-radius: 6px;
-      background: #fff3cd;
-      color: #856404;
-      cursor: pointer;
-    }
-    .skip-word-btn.hidden { display: none !important; }
-    .skip-word-btn.skip-word-active {
-      background: #ffe8a1;
-      border-color: #e0a800;
-    }
 
     .word-btn-opt:active {
       transform: scale(0.96);
@@ -699,7 +681,6 @@
             </div>
             <div id="boxChatInput">
               <div id="canvasReactBar" class="canvas-react-bar hidden" title="Реакция на рисунок (не в чат)"></div>
-              <button type="button" id="btnSkipWordVote" class="skip-word-btn hidden">Сменить рисующего</button>
               <form id="formChat" class="chat-input-row" action="javascript:void(0);">
                 <input class="form-control" id="inputChat" autocomplete="off" type="text" placeholder="Введите догадку или сообщение...">
               </form>
