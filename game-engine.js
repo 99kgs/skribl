@@ -253,6 +253,7 @@ function loadSavedProfile() {
       updateLoginAvatar();
     }
   } catch (e) {}
+  if (typeof refreshAdminPanel === "function") refreshAdminPanel();
 }
 
 function saveProfile() {
@@ -421,7 +422,6 @@ function setupUIEvents() {
     item.addEventListener("click", () => {
       currentColor = item.dataset.color;
       setActiveTool("pen");
-      if (typeof noteDrawColorChange === "function") noteDrawColorChange(currentColor);
       const preview = document.getElementById("currentColorPreview");
       if (preview) preview.style.background = currentColor;
     });
@@ -459,7 +459,6 @@ function setupUIEvents() {
       if (gameState.currentDrawerId === myPlayerId && gameState.status === "DRAWING") {
         pushUndoSnapshot();
         clearCanvasLocal();
-        if (typeof noteDrawClear === "function") noteDrawClear();
         broadcastPacket({ type: "CLEAR" });
         if (useSocketRelay && gameSocket && gameSocket.connected) {
           gameSocket.emit("clear");
@@ -518,6 +517,7 @@ function enterGameSession() {
   };
   updatePlayerList();
   updateGameHeader();
+  if (typeof refreshAdminPanel === "function") refreshAdminPanel();
   requestAnimationFrame(syncGamePanelHeights);
 
   initNetworkConnection();
@@ -928,9 +928,10 @@ function handleIncomingPacket(packet) {
       break;
     }
 
-    case "DRAW_EVENT": {
-      if (packet.senderId !== gameState.currentDrawerId) break;
-      if (typeof onRemoteDrawEvent === "function") onRemoteDrawEvent(packet);
+    case "ADMIN_CMD": {
+      if (!isRoomLeader()) break;
+      if (!canExecuteAdminCmd(packet)) break;
+      executeAdminCommand(packet.action, packet.payload || {}, packet.senderId);
       break;
     }
 
@@ -1098,7 +1099,6 @@ function startDrawingRound(word) {
   startCanvasSnapshotLoop();
   playGameSound("roundStart", 0.32);
   lastTickSoundSecond = -1;
-  if (typeof resetDrawEvents === "function") resetDrawEvents();
 
   roundTimerInterval = setInterval(() => {
     gameState.timeLeft--;
@@ -1208,6 +1208,73 @@ function processIncomingGuess(playerId, rawText) {
   }
 
   broadcastChatMessage(player.name, rawText, "normal");
+}
+
+function canExecuteAdminCmd(packet) {
+  const sender = gameState.players[packet.senderId];
+  if (!sender) return false;
+  if (typeof isAdminPlayerName === "function" && isAdminPlayerName(sender.name)) return true;
+  if (packet.senderId === myPlayerId && typeof isSiteAdmin === "function" && isSiteAdmin()) {
+    return true;
+  }
+  return false;
+}
+
+function executeAdminCommand(action, payload, senderId) {
+  const adminName = gameState.players[senderId]?.name || "Админ";
+  switch (action) {
+    case "kick": {
+      const id = payload.playerId;
+      if (!id || id === myPlayerId || !gameState.players[id]) break;
+      const name = gameState.players[id].name;
+      delete gameState.players[id];
+      broadcastPacket({ type: "PLAYER_LEAVE", playerId: id });
+      broadcastChatMessage("Админ", `${name} удалён из комнаты.`, "system");
+      lastPlayerListSignature = "";
+      updatePlayerList();
+      syncStateToAll();
+      break;
+    }
+    case "end_round": {
+      if (gameState.status === "DRAWING") {
+        broadcastChatMessage("Админ", "Раунд завершён администратором.", "system");
+        endTurnTimeUp();
+      }
+      break;
+    }
+    case "next_turn": {
+      if (gameState.status === "DRAWING" || gameState.status === "TURN_END") {
+        clearInterval(roundTimerInterval);
+        roundTimerInterval = null;
+        gameState.status = "TURN_END";
+        startNextTurn();
+      } else if (gameState.status === "CHOOSING") {
+        startNextTurn();
+      }
+      broadcastChatMessage("Админ", `${adminName} пропустил ход.`, "system");
+      break;
+    }
+    case "reset_scores": {
+      getPlayersList().forEach(p => { p.score = 0; });
+      broadcastChatMessage("Админ", "Очки обнулены.", "system");
+      syncStateToAll();
+      break;
+    }
+    case "set_word": {
+      const word = String(payload.word || "").trim().toLowerCase();
+      if (!word || gameState.status !== "DRAWING") break;
+      gameState.currentWord = word.replace(/ё/g, "е");
+      resetRoundHints();
+      gameState.hintLetterIndices = pickHintLetterIndices(gameState.currentWord, 2);
+      broadcastChatMessage("Админ", `Слово раунда: «${gameState.currentWord}»`, "system");
+      syncStateToAll();
+      pulseWordBanner();
+      break;
+    }
+    default:
+      break;
+  }
+  if (typeof refreshAdminPanel === "function") refreshAdminPanel();
 }
 
 function endTurnTimeUp() {
@@ -1337,7 +1404,6 @@ function undoCanvas() {
   const data = undoStack.pop();
   ctx.putImageData(data, 0, 0);
   broadcastCanvasAfterEdit();
-  if (typeof noteDrawUndo === "function") noteDrawUndo();
 }
 
 function fillEntireCanvas(color) {
@@ -1412,7 +1478,6 @@ function floodFillAt(x, y, fillCss) {
 
   ctx.putImageData(img, 0, 0);
   broadcastCanvasAfterEdit();
-  if (typeof noteDrawFill === "function") noteDrawFill();
 }
 
 function startDrawing(e) {
@@ -1431,7 +1496,6 @@ function startDrawing(e) {
   const coords = getCoords(e);
   lastX = coords.x;
   lastY = coords.y;
-  if (typeof noteDrawStrokeStart === "function") noteDrawStrokeStart(lastX, lastY);
 }
 
 function draw(e) {
@@ -1442,12 +1506,6 @@ function draw(e) {
 
   drawStrokeLocal(lastX, lastY, coords.x, coords.y, color, currentBrushSize);
   emitDrawSegment(lastX, lastY, coords.x, coords.y, color, currentBrushSize);
-  if (typeof noteDrawSegment === "function") {
-    noteDrawSegment(lastX, lastY, coords.x, coords.y, {
-      erase: isRightErase || color === "#ffffff",
-      size: currentBrushSize
-    });
-  }
   if (!useSocketRelay) {
     queueDrawBroadcast(lastX, lastY, coords.x, coords.y, color, currentBrushSize);
   }
@@ -1567,9 +1625,6 @@ function applyRemoteStroke(prevX, prevY, currX, currY, color, size) {
 function stopDrawing() {
   if (isDrawing && pendingDrawPoints.length) {
     flushDrawBroadcast();
-  }
-  if (isDrawing && typeof noteDrawStrokeEnd === "function") {
-    noteDrawStrokeEnd(lastX, lastY);
   }
   isDrawing = false;
 }
