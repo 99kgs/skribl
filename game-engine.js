@@ -113,7 +113,7 @@ function pickRandomWordChoices(count = 3) {
 }
 
 function rotateDrawerToNext() {
-  const players = getPlayersList();
+  const players = getPlayersList().sort((a, b) => a.id.localeCompare(b.id));
   if (!players.length) return;
   const currentIndex = players.findIndex(p => p.id === gameState.currentDrawerId);
   const nextIndex = (currentIndex + 1) % players.length;
@@ -128,6 +128,11 @@ function beginChoosingPhase() {
   gameState.currentWord = "";
   resetRoundHints();
   displayedWordChoicesKey = "";
+  wordChoiceSubmitted = false;
+  if (wordChoiceRetryTimer) {
+    clearTimeout(wordChoiceRetryTimer);
+    wordChoiceRetryTimer = null;
+  }
   gameState.timeLeft = 15;
   drawStrokeSeq = 0;
   stopCanvasSnapshotLoop();
@@ -383,6 +388,9 @@ let lastPlayerListSignature = "";
 let pendingWordChoices = [];
 /** Не пересоздавать кнопки выбора слова на каждом тике таймера */
 let displayedWordChoicesKey = "";
+/** Рисующий уже нажал слово — не показывать модалку снова до SYNC DRAWING */
+let wordChoiceSubmitted = false;
+let wordChoiceRetryTimer = null;
 let currentTool = "pen";
 /** ПКМ: временное стирание без смены выбранного инструмента */
 let isRightErase = false;
@@ -892,7 +900,15 @@ function broadcastPacket(packet) {
     gameSocket.emit("relay", packet);
   }
 
-  const qos = (packet.type === "DRAW_BATCH" || packet.type === "DRAW_STROKE" || packet.type === "CLEAR" || packet.type === "SNAP_PART") ? 1 : 0;
+  const qos =
+    packet.type === "DRAW_BATCH" ||
+    packet.type === "DRAW_STROKE" ||
+    packet.type === "CLEAR" ||
+    packet.type === "SNAP_PART" ||
+    packet.type === "WORD_CHOSEN" ||
+    packet.type === "SYNC_STATE"
+      ? 1
+      : 0;
   if (mqttClient && mqttClient.connected) {
     try {
       mqttClient.publish(roomTopic, JSON.stringify(packet), { qos });
@@ -1039,8 +1055,15 @@ function handleIncomingPacket(packet) {
       updatePlayerList();
       updateGameHeader();
       if (packet.state.status === "DRAWING") {
+        wordChoiceSubmitted = false;
+        pendingWordChoices = [];
         hideWordChoices();
-      } else if (packet.state.status === "CHOOSING" && gameState.currentDrawerId === myPlayerId && pendingWordChoices.length) {
+      } else if (
+        packet.state.status === "CHOOSING" &&
+        gameState.currentDrawerId === myPlayerId &&
+        pendingWordChoices.length &&
+        !wordChoiceSubmitted
+      ) {
         showWordChoices(pendingWordChoices);
       }
       break;
@@ -1112,6 +1135,7 @@ function handleIncomingPacket(packet) {
     case "WORD_CHOICES": {
       if (packet.targetId === myPlayerId) {
         pendingWordChoices = packet.choices || [];
+        if (wordChoiceSubmitted) break;
         displayedWordChoicesKey = "";
         showWordChoices(pendingWordChoices);
       } else {
@@ -1135,10 +1159,12 @@ function handleIncomingPacket(packet) {
       if (!isRoomLeader()) break;
       if (gameState.status !== "CHOOSING") break;
       if (packet.senderId !== gameState.currentDrawerId) break;
-      let chosen = String(packet.word || "").trim().toLowerCase();
+      let chosen = normalizeGuessText(packet.word);
+      if (!chosen && pendingWordChoices.length) chosen = pendingWordChoices[0];
       if (pendingWordChoices.length) {
-        const match = pendingWordChoices.find(w => w.toLowerCase() === chosen);
-        chosen = match || pendingWordChoices[0];
+        const match = pendingWordChoices.find(w => normalizeGuessText(w) === chosen);
+        if (match) chosen = match;
+        else if (!chosen) chosen = pendingWordChoices[0];
       }
       if (!chosen) break;
       startDrawingRound(chosen);
@@ -1256,6 +1282,11 @@ function startDrawingRound(word) {
   gameState.drawingEpoch = (gameState.drawingEpoch || 0) + 1;
   gameState.guessesThisRound = 0;
   displayedWordChoicesKey = "";
+  wordChoiceSubmitted = false;
+  if (wordChoiceRetryTimer) {
+    clearTimeout(wordChoiceRetryTimer);
+    wordChoiceRetryTimer = null;
+  }
 
   const wLen = gameState.currentWord.length;
   broadcastChatMessage("Игра", `Раунд начался! Слово из ${wLen} ${letterWord(wLen)}. Раньше угадал — больше очков.`, "system");
@@ -1958,8 +1989,8 @@ function updateGameHeader() {
       setBanner("Угадай", "_ _ _ _", "word-hint-mode");
     }
   } else if (gameState.status === "CHOOSING") {
-    setBanner("Раунд", "ВЫБОР СЛОВА…", null);
-    if (isDrawer && pendingWordChoices.length) {
+    setBanner("Раунд", wordChoiceSubmitted ? "ЗАПУСК РАУНДА…" : "ВЫБОР СЛОВА…", null);
+    if (isDrawer && pendingWordChoices.length && !wordChoiceSubmitted) {
       const modal = document.getElementById("word-select-modal");
       if (modal && modal.classList.contains("hidden")) {
         showWordChoices(pendingWordChoices);
@@ -2006,11 +2037,14 @@ function updateUI() {
 
 function commitWordChoice(word) {
   if (gameState.currentDrawerId !== myPlayerId || gameState.status !== "CHOOSING") return;
-  const picked = String(word ?? "").trim().toLowerCase();
+  if (wordChoiceSubmitted) return;
+  const picked = normalizeGuessText(word);
   if (!picked) return;
 
+  wordChoiceSubmitted = true;
   hideWordChoices();
   displayedWordChoicesKey = "";
+  updateGameHeader();
 
   if (isRoomLeader()) {
     startDrawingRound(picked);
@@ -2018,11 +2052,22 @@ function commitWordChoice(word) {
   }
 
   broadcastPacket({ type: "WORD_CHOSEN", word: picked });
-  broadcastPacket({ type: "REQUEST_SYNC" });
+  if (wordChoiceRetryTimer) clearTimeout(wordChoiceRetryTimer);
+  wordChoiceRetryTimer = setTimeout(() => {
+    wordChoiceRetryTimer = null;
+    if (
+      !isRoomLeader() &&
+      wordChoiceSubmitted &&
+      gameState.status === "CHOOSING" &&
+      gameState.currentDrawerId === myPlayerId
+    ) {
+      broadcastPacket({ type: "WORD_CHOSEN", word: picked });
+    }
+  }, 1500);
 }
 
 function showWordChoices(words) {
-  if (gameState.currentDrawerId !== myPlayerId) {
+  if (gameState.currentDrawerId !== myPlayerId || wordChoiceSubmitted) {
     hideWordChoices();
     return;
   }
@@ -2050,7 +2095,8 @@ function showWordChoices(words) {
 }
 
 function hideWordChoices() {
-  document.getElementById("word-select-modal").classList.add("hidden");
+  const modal = document.getElementById("word-select-modal");
+  if (modal) modal.classList.add("hidden");
 }
 
 function handleChatSubmit(e) {
